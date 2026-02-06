@@ -76,22 +76,7 @@ export const TvDashboard: React.FC = () => {
     setScoreRules(rules);
 
     try {
-        // 2. Identify "TECNICO" Sector ID
-        const sectorsRes = await safeFetch(buildUrl(config, '/webservice/v1/empresa_setor'), {
-            method: 'POST', headers: config.headers,
-            body: JSON.stringify({ qtype: 'empresa_setor.id', query: '0', oper: '>', rp: '1000' })
-        });
-        
-        // Procura por setor que contenha "TECNICO" ou "TÉCNICO"
-        const techSectorIds = (sectorsRes.registros || [])
-            .filter((s: any) => s.setor && s.setor.toUpperCase().includes('CNICO'))
-            .map((s: any) => s.id);
-
-        if (techSectorIds.length === 0) {
-            console.warn("Setor TÉCNICO não encontrado. Exibindo geral.");
-        }
-
-        // 3. Get Employees from that sector
+        // 2. Get ALL Active Employees (Removido filtro de setor)
         const empRes = await safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
              method: 'POST', headers: config.headers,
              body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' })
@@ -99,13 +84,11 @@ export const TvDashboard: React.FC = () => {
 
         const techEmployees = new Map<string, string>(); // ID -> Name
         (empRes.registros || []).forEach((e: any) => {
-             // Se achou setor tecnico, filtra. Se não achou nenhum setor tecnico, pega todos.
-             if (techSectorIds.length === 0 || techSectorIds.includes(e.setor_id)) {
-                 techEmployees.set(String(e.id), e.funcionario || e.nome);
-             }
+             // Adiciona todos os funcionários ativos, independente do setor
+             techEmployees.set(String(e.id), e.funcionario || e.nome);
         });
 
-        // 4. Fetch OS Data (Last 3 Months)
+        // 3. Fetch OS Data (Last 3 Months)
         const today = new Date();
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(today.getMonth() - 3);
@@ -145,7 +128,8 @@ export const TvDashboard: React.FC = () => {
 
         allOrders.forEach((reg: any) => {
             const techId = String(reg.id_tecnico);
-            if (!techEmployees.has(techId)) return; // Filter by sector
+            // Verifica se o técnico existe na lista de funcionários ativos
+            if (!techEmployees.has(techId)) return;
 
             const techName = techEmployees.get(techId)!;
             const closeDate = new Date(reg.data_fechamento);
@@ -252,7 +236,7 @@ export const TvDashboard: React.FC = () => {
              )}
              <div>
                  <h1 className="text-3xl font-bold tracking-tight text-white">{companyName}</h1>
-                 <p className="text-slate-400 flex items-center gap-2 text-sm"><TrendingUp size={16} /> Dashboard de Performance - Setor Técnico</p>
+                 <p className="text-slate-400 flex items-center gap-2 text-sm"><TrendingUp size={16} /> Dashboard de Performance</p>
              </div>
          </div>
          <div className="text-right">
