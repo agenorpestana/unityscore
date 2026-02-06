@@ -1,38 +1,67 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Building2, MapPin, Key, Upload, Globe, ShieldCheck, Mail, Phone } from 'lucide-react';
+import { Save, Building2, MapPin, Key, Upload, Globe, ShieldCheck, Mail, Phone, Loader2 } from 'lucide-react';
 import { Company } from '../types';
 
 export const CompanySettings: React.FC = () => {
   const [company, setCompany] = useState<Company>({
-    id: '1',
+    id: '',
     name: '',
     cnpj: '',
     address: '',
     email: '',
     phone: '',
-    ixcDomain: 'https://ixc.itlfibra.com', // Updated default
-    ixcToken: '75:57a1a19dd8d25ff7c5519a85994926f4e76878c5f4d4a0e0596d7f32acf78ef6', // Default provided token
-    useCorsProxy: true, // Default enabled for browser compatibility
+    ixcDomain: '',
+    ixcToken: '',
+    useCorsProxy: true,
     logoUrl: null
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
 
   useEffect(() => {
-    // Simulate fetching data
-    const saved = localStorage.getItem('unity_company_data');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Ensure useCorsProxy exists in older saved data
-      setCompany({ 
-        ...parsed, 
-        useCorsProxy: parsed.useCorsProxy ?? true,
-        email: parsed.email || '',
-        phone: parsed.phone || ''
-      });
-    }
+    loadCompanyData();
   }, []);
+
+  const loadCompanyData = async () => {
+     setIsFetching(true);
+     // Pega o ID da empresa do login salvo ou do cache antigo
+     const savedLocal = localStorage.getItem('unity_company_data');
+     let companyId = null;
+     
+     if (savedLocal) {
+         const parsed = JSON.parse(savedLocal);
+         companyId = parsed.id;
+     }
+     
+     // Se não tiver ID no cache local, tenta pegar da sessão do usuário (se implementado contexto)
+     // Como fallback, se não tiver ID, o usuário terá que relogar ou o sistema assume vazio
+     if (!companyId) {
+         setIsFetching(false);
+         return;
+     }
+
+     try {
+         const res = await fetch(`/api/companies/${companyId}`);
+         if (res.ok) {
+             const data = await res.json();
+             // Mesclar com estado inicial para garantir campos
+             const fullData = { 
+                 ...data, 
+                 useCorsProxy: true, // Força true pois agora usamos proxy interno
+                 id: data.id.toString() 
+             };
+             setCompany(fullData);
+             // Atualiza cache local para outros componentes usarem
+             localStorage.setItem('unity_company_data', JSON.stringify(fullData));
+         }
+     } catch (e) {
+         console.error("Erro ao carregar empresa", e);
+     } finally {
+         setIsFetching(false);
+     }
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = e.target;
@@ -53,24 +82,38 @@ export const CompanySettings: React.FC = () => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setMessage(null);
 
-    // Simulate API call
-    setTimeout(() => {
+    try {
+      const res = await fetch(`/api/companies/${company.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(company)
+      });
+
+      if (!res.ok) throw new Error('Falha ao salvar');
+
+      // Atualiza cache local
       localStorage.setItem('unity_company_data', JSON.stringify(company));
-      setIsLoading(false);
-      setMessage({ type: 'success', text: 'Dados da empresa atualizados com sucesso!' });
       
-      // Clear message after 3 seconds
+      setMessage({ type: 'success', text: 'Dados da empresa atualizados com sucesso!' });
+    } catch (e) {
+      setMessage({ type: 'error', text: 'Erro ao salvar configurações.' });
+    } finally {
+      setIsLoading(false);
       setTimeout(() => setMessage(null), 3000);
-    }, 800);
+    }
   };
 
+  if (isFetching) {
+      return <div className="flex justify-center p-10"><Loader2 className="animate-spin text-brand-600" size={32} /></div>;
+  }
+
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-4xl mx-auto animate-in fade-in">
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-800">Configurações da Empresa</h2>
         <p className="text-gray-500">Gerencie os dados do provedor e integrações.</p>
@@ -152,7 +195,7 @@ export const CompanySettings: React.FC = () => {
                     <input
                       type="email"
                       name="email"
-                      value={company.email}
+                      value={company.email || ''}
                       onChange={handleChange}
                       className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                       placeholder="contato@empresa.com"
@@ -169,7 +212,7 @@ export const CompanySettings: React.FC = () => {
                     <input
                       type="text"
                       name="phone"
-                      value={company.phone}
+                      value={company.phone || ''}
                       onChange={handleChange}
                       className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                       placeholder="(00) 00000-0000"
@@ -187,7 +230,7 @@ export const CompanySettings: React.FC = () => {
                   <input
                     type="text"
                     name="address"
-                    value={company.address}
+                    value={company.address || ''}
                     onChange={handleChange}
                     className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                     placeholder="Rua Exemplo, 123 - Centro, Cidade - UF"
@@ -211,13 +254,13 @@ export const CompanySettings: React.FC = () => {
                       <input
                         type="text"
                         name="ixcDomain"
-                        value={company.ixcDomain}
+                        value={company.ixcDomain || ''}
                         onChange={handleChange}
                         className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
                         placeholder="https://ixc.meuprovedor.com.br"
                       />
                       <p className="mt-1 text-xs text-gray-500">
-                        URL base do seu IXC (inclua https://).
+                        URL base do seu IXC (inclua https://). O acesso será feito via Proxy Seguro interno.
                       </p>
                     </div>
                   </div>
@@ -228,7 +271,7 @@ export const CompanySettings: React.FC = () => {
                       <input
                         type="password"
                         name="ixcToken"
-                        value={company.ixcToken}
+                        value={company.ixcToken || ''}
                         onChange={handleChange}
                         className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
                         placeholder="ID:TOKEN"
@@ -239,25 +282,17 @@ export const CompanySettings: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mt-2">
-                    <label className="flex items-start gap-3 cursor-pointer">
+                  <div className="bg-green-50 border border-green-100 rounded-lg p-4 mt-2">
+                    <label className="flex items-start gap-3">
                       <div className="flex items-center h-5 mt-1">
-                        <input
-                          type="checkbox"
-                          name="useCorsProxy"
-                          checked={company.useCorsProxy}
-                          onChange={handleChange}
-                          className="w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
-                        />
+                        <ShieldCheck className="text-green-600" size={20} />
                       </div>
                       <div>
                         <span className="flex items-center gap-2 text-sm font-medium text-gray-900">
-                          <ShieldCheck size={16} className="text-brand-600" />
-                          Ativar Proxy CORS (Recomendado para Testes)
+                          Proxy Interno Ativado
                         </span>
                         <p className="text-xs text-gray-600 mt-1">
-                          Resolve o erro "Erro ao carregar" ou "Network Error" ao acessar a API do IXC diretamente pelo navegador. 
-                          Desative apenas se estiver usando um servidor proxy próprio.
+                          Para segurança e evitar erros de CORS, todas as requisições agora passam pelo nosso servidor backend.
                         </p>
                       </div>
                     </label>
@@ -283,7 +318,7 @@ export const CompanySettings: React.FC = () => {
             className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm disabled:opacity-50"
           >
             {isLoading ? (
-              <span className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></span>
+              <Loader2 className="animate-spin" size={18} />
             ) : (
               <>
                 <Save size={18} />

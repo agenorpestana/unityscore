@@ -70,23 +70,24 @@ export const Reports: React.FC = () => {
     } catch (e) { return dateString; }
   };
 
+  // --- API PROXY CONFIG ---
   const getApiConfig = useCallback(() => {
     const savedCompany = localStorage.getItem('unity_company_data');
     if (!savedCompany) return null;
     const company: Company = JSON.parse(savedCompany);
-    if (!company.ixcDomain || !company.ixcToken) return null;
-    const domain = company.ixcDomain.trim().replace(/\/$/, '');
-    const token = btoa(company.ixcToken.trim());
+    if (!company.id) return null;
+
     return {
-      domain,
-      useCorsProxy: company.useCorsProxy !== false,
-      headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json', 'ixcsoft': 'listar' }
+      domain: '/api/ixc-proxy', 
+      headers: { 
+          'Content-Type': 'application/json',
+          'x-company-id': company.id 
+      }
     };
   }, []);
 
   const buildUrl = (config: any, path: string) => {
-    const targetUrl = `${config.domain}${path}`;
-    return config.useCorsProxy ? `https://corsproxy.io/?${encodeURIComponent(targetUrl)}` : targetUrl;
+    return `${config.domain}${path}`;
   };
 
   const safeFetch = async (url: string, options: RequestInit) => {

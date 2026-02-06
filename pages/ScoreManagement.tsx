@@ -65,23 +65,24 @@ export const ScoreManagement: React.FC = () => {
     } catch (e) { return dateString; }
   };
 
+  // --- API PROXY CONFIG ---
   const getApiConfig = useCallback(() => {
     const savedCompany = localStorage.getItem('unity_company_data');
     if (!savedCompany) return null;
     const company: Company = JSON.parse(savedCompany);
-    if (!company.ixcDomain || !company.ixcToken) return null;
-    const domain = company.ixcDomain.trim().replace(/\/$/, '');
-    const token = btoa(company.ixcToken.trim());
+    if (!company.id) return null;
+
     return {
-      domain,
-      useCorsProxy: company.useCorsProxy !== false,
-      headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json', 'ixcsoft': 'listar' }
+      domain: '/api/ixc-proxy', 
+      headers: { 
+          'Content-Type': 'application/json',
+          'x-company-id': company.id 
+      }
     };
   }, []);
 
   const buildUrl = (config: any, path: string) => {
-    const targetUrl = `${config.domain}${path}`;
-    return config.useCorsProxy ? `https://corsproxy.io/?${encodeURIComponent(targetUrl)}` : targetUrl;
+    return `${config.domain}${path}`;
   };
 
   const safeFetch = async (url: string, options: RequestInit) => {
@@ -97,19 +98,17 @@ export const ScoreManagement: React.FC = () => {
     } catch (err: any) { throw err; }
   };
 
+  // ... Restante do código (fetchRules, fetchStaff, etc.) permanece igual pois usam getApiConfig ...
+  // [Apenas o método getApiConfig e buildUrl precisaram mudar para apontar para o proxy]
+
   const fetchRulesFromBackend = async () => {
      try {
-         // Tenta buscar da API (MySQL)
          const res = await fetch('/api/score-rules');
          if (res.ok) {
              const dbRules = await res.json();
-             // Mescla com o local para garantir que regras novas do IXC apareçam
              return dbRules;
          }
-     } catch (e) {
-         console.log("Backend offline, usando localStorage");
-     }
-     // Fallback
+     } catch (e) { }
      const savedRules = localStorage.getItem('unity_score_rules');
      return savedRules ? JSON.parse(savedRules) : {};
   };
@@ -163,14 +162,12 @@ export const ScoreManagement: React.FC = () => {
         method: 'POST', headers: config.headers, body: JSON.stringify({ qtype: 'su_oss_assunto.ativo', query: 'S', oper: '=', rp: '1000', sortname: 'su_oss_assunto.assunto', sortorder: 'asc' })
       });
       
-      // Carregar regras atuais (DB ou Local)
       const currentRules = await fetchRulesFromBackend();
 
       if (data.registros) {
         const subs: Subject[] = data.registros.map((reg: any) => ({ id: reg.id, title: reg.assunto }));
         setSubjects(subs);
         
-        // Sincronizar assuntos do IXC com regras existentes
         let hasChanges = false;
         subs.forEach(sub => {
           if (!currentRules[sub.id]) { 
@@ -389,10 +386,8 @@ export const ScoreManagement: React.FC = () => {
       const updatedRules = { ...scoreRules, [editingRule.subject.id]: editingRule.rule };
       setScoreRules(updatedRules);
       
-      // Salvar Local
       localStorage.setItem('unity_score_rules', JSON.stringify(updatedRules));
       
-      // Salvar na API (Backend MySQL)
       try {
           await fetch('/api/score-rules', {
               method: 'POST',
@@ -401,7 +396,6 @@ export const ScoreManagement: React.FC = () => {
                   subjectId: editingRule.rule.subjectId,
                   points: editingRule.rule.points,
                   type: editingRule.rule.type
-                  // companyId é tratado no backend (ou adicionado aqui se tiver multi-tenant no frontend)
               })
           });
       } catch(e) {

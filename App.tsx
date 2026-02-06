@@ -40,6 +40,14 @@ const App: React.FC = () => {
       isAuthenticated: true,
       user: user
     });
+    // Atualiza/Cria dados da empresa no localStorage para facilitar acesso dos componentes
+    if (user.companyId) {
+        // Tenta manter o token existente se já houver
+        const existing = localStorage.getItem('unity_company_data');
+        const existingData = existing ? JSON.parse(existing) : {};
+        const newData = { ...existingData, id: user.companyId };
+        localStorage.setItem('unity_company_data', JSON.stringify(newData));
+    }
   };
 
   const handleLogout = () => {
@@ -50,34 +58,28 @@ const App: React.FC = () => {
     setActiveTab('dashboard');
   };
 
-  // --- API Helpers ---
+  // --- API Helpers (USANDO PROXY INTERNO) ---
   const getApiConfig = useCallback(() => {
     const savedCompany = localStorage.getItem('unity_company_data');
     if (!savedCompany) return null;
     
     const company: Company = JSON.parse(savedCompany);
-    if (!company.ixcDomain || !company.ixcToken) return null;
-
-    const domain = company.ixcDomain.trim().replace(/\/$/, '');
-    const token = btoa(company.ixcToken.trim());
+    // Para o Proxy, só precisamos do ID da empresa, o backend resolve URL e Token
+    if (!company.id) return null;
     
     return {
-      domain,
-      useCorsProxy: company.useCorsProxy !== false,
+      domain: '/api/ixc-proxy', // URL relativa ao nosso backend
+      useCorsProxy: true, // Sempre usa proxy agora
       headers: {
-        'Authorization': `Basic ${token}`,
         'Content-Type': 'application/json',
-        'ixcsoft': 'listar'
+        'x-company-id': company.id // Header chave para o backend saber quem é
       }
     };
   }, []);
 
   const buildUrl = (config: any, path: string) => {
-    const targetUrl = `${config.domain}${path}`;
-    if (config.useCorsProxy) {
-      return `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
-    }
-    return targetUrl;
+    // O path do IXC é anexado ao proxy
+    return `${config.domain}${path}`;
   };
 
   const safeFetch = async (url: string, options: RequestInit) => {
@@ -86,13 +88,11 @@ const App: React.FC = () => {
       const text = await response.text();
       
       if (!response.ok) {
-        // Try to parse error as JSON, otherwise use text
         try {
           const jsonError = JSON.parse(text);
           throw new Error(jsonError.message || `Erro API: ${response.status}`);
         } catch {
-           // Fallback for HTML errors (common with Proxy)
-           throw new Error(`Erro API: ${response.status}`);
+           throw new Error(`Erro API: ${response.status} - ${text.substring(0, 50)}`);
         }
       }
 
@@ -111,14 +111,13 @@ const App: React.FC = () => {
   const fetchDashboardData = useCallback(async () => {
     const config = getApiConfig();
     if (!config) {
-      setDashboardError("Configurações da API não encontradas.");
+      setDashboardError("Configurações da empresa não carregadas. Configure na aba lateral.");
       return;
     }
 
     setLoadingDashboard(true);
     setDashboardError(null);
     
-    // Format: YYYY-MM-DD based on LOCAL time (Brazil)
     const today = new Date();
     const year = today.getFullYear();
     const month = String(today.getMonth() + 1).padStart(2, '0');
@@ -128,7 +127,6 @@ const App: React.FC = () => {
     try {
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
 
-      // 1. Opened Today (API Count is reliable for simple date checks)
       const openedPromise = safeFetch(url, {
         method: 'POST',
         headers: config.headers,
@@ -140,7 +138,6 @@ const App: React.FC = () => {
         })
       });
 
-      // 2. Closed Today (API Count is reliable for simple date checks)
       const closedPromise = safeFetch(url, {
         method: 'POST',
         headers: config.headers,
@@ -152,10 +149,7 @@ const App: React.FC = () => {
         })
       });
 
-      // 3. FETCH DETAILS FOR OPEN ORDERS
-      // Since filters like != or LIKE might fail on some IXC versions, we fetch the common "Open" statuses 
-      // and filter in memory to be 100% sure.
-      const statusList = ['A', 'EN', 'AS', 'AG']; // Aberto, Encaminhado, Assumido, Agendado
+      const statusList = ['A', 'EN', 'AS', 'AG']; 
       
       const statusPromises = statusList.map(status => 
         safeFetch(url, {
@@ -165,50 +159,39 @@ const App: React.FC = () => {
             qtype: 'su_oss_chamado.status',
             query: status,
             oper: '=',
-            rp: '500', // Limit to recent 500 of each status to avoid payload issues
+            rp: '500', 
             sortname: 'su_oss_chamado.id',
             sortorder: 'desc'
           })
         }).then(res => res.registros || [])
       );
 
-      // Execute Promises
       const [openedData, closedData, ...statusResults] = await Promise.all([
         openedPromise.catch(e => ({ total: '0', error: e })),
         closedPromise.catch(e => ({ total: '0', error: e })),
         ...statusPromises.map(p => p.catch(() => []))
       ]);
 
-      // Combine all fetched "potential open" orders
       const allFetchedOrders = statusResults.flat();
-      
-      // Deduplicate by ID (just in case an order changed status during fetch or logic overlap)
       const uniqueOrders = Array.from(new Map(allFetchedOrders.map((item: any) => [item.id, item])).values());
 
-      // --- LOGIC: TOTAL OPEN ---
-      // "mesma lógica lá da aba pontua se tiver sem data de fechamento ou com data com zeros está em aberto"
       const reallyOpenOrders = uniqueOrders.filter((os: any) => {
         const df = os.data_fechamento;
-        // Check if date is null, empty, or '0000-00-00...'
         const hasClosingDate = df && df !== '0000-00-00 00:00:00' && df.length > 10;
-        return !hasClosingDate; // Include if it does NOT have a valid closing date
+        return !hasClosingDate; 
       });
 
-      // --- LOGIC: WITH TECHNICIANS ---
-      // "se tiver alguma os associada a um técnico é considerado com o técnico"
       const withTechsCount = reallyOpenOrders.filter((os: any) => 
         os.id_tecnico && 
         String(os.id_tecnico) !== '0' && 
         String(os.id_tecnico).trim() !== ''
       ).length;
 
-      const totalOpen = reallyOpenOrders.length;
-
       setDashboardData({
         openedToday: parseInt(openedData.total || '0'),
         closedToday: parseInt(closedData.total || '0'),
         withTechnicians: withTechsCount,
-        totalOpen: totalOpen
+        totalOpen: reallyOpenOrders.length
       });
 
       setLastUpdated(new Date().toLocaleTimeString('pt-BR'));
@@ -221,7 +204,6 @@ const App: React.FC = () => {
     }
   }, [getApiConfig]);
 
-  // Initial Load & Auto Refresh
   useEffect(() => {
     if (auth.isAuthenticated && activeTab === 'dashboard' && auth.user?.role !== 'saas_owner') {
       fetchDashboardData();
@@ -234,12 +216,10 @@ const App: React.FC = () => {
     return <Login onLogin={handleLogin} />;
   }
 
-  // ROTA DO SUPER ADMIN (DONO DO SAAS)
   if (auth.user?.role === 'saas_owner') {
     return <SuperAdminDashboard onLogout={handleLogout} currentUser={auth.user} />;
   }
 
-  // ROTA DO TENANT (CLIENTE DO SAAS)
   return (
     <div className="flex min-h-screen bg-gray-50 font-sans">
       <Sidebar 
@@ -275,7 +255,6 @@ const App: React.FC = () => {
               </div>
             </header>
 
-            {/* Error Banner */}
             {dashboardError && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 text-red-700">
                  <ShieldAlert className="shrink-0 mt-0.5" size={20} />
@@ -286,10 +265,8 @@ const App: React.FC = () => {
               </div>
             )}
             
-            {/* Real-time Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               
-              {/* Card 1: Abertas Hoje */}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                   <ClipboardList size={64} className="text-blue-600" />
@@ -304,14 +281,9 @@ const App: React.FC = () => {
                   <div className="text-4xl font-extrabold text-gray-900">
                     {loadingDashboard ? '-' : dashboardData.openedToday}
                   </div>
-                  <p className="text-xs text-gray-500 mt-2 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-                    Novas solicitações
-                  </p>
                 </div>
               </div>
 
-              {/* Card 2: Fechadas Hoje */}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                   <CheckCircle2 size={64} className="text-green-600" />
@@ -326,14 +298,9 @@ const App: React.FC = () => {
                   <div className="text-4xl font-extrabold text-gray-900">
                     {loadingDashboard ? '-' : dashboardData.closedToday}
                   </div>
-                  <p className="text-xs text-gray-500 mt-2 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                    Concluídas com sucesso
-                  </p>
                 </div>
               </div>
 
-              {/* Card 3: Com Técnicos */}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                   <HardHat size={64} className="text-orange-600" />
@@ -348,14 +315,9 @@ const App: React.FC = () => {
                   <div className="text-4xl font-extrabold text-gray-900">
                     {loadingDashboard ? '-' : dashboardData.withTechnicians}
                   </div>
-                  <p className="text-xs text-gray-500 mt-2 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-orange-500"></span>
-                    Em aberto com técnico
-                  </p>
                 </div>
               </div>
 
-              {/* Card 4: Total em Aberto */}
               <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                   <AlertCircle size={64} className="text-purple-600" />
@@ -370,26 +332,9 @@ const App: React.FC = () => {
                   <div className="text-4xl font-extrabold text-gray-900">
                     {loadingDashboard ? '-' : dashboardData.totalOpen}
                   </div>
-                  <p className="text-xs text-gray-500 mt-2 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-                    Pendentes no sistema
-                  </p>
                 </div>
               </div>
             </div>
-
-            {/* Config Warning */}
-            {dashboardData.totalOpen === 0 && !loadingDashboard && !dashboardError && (
-              <div className="bg-blue-50 border border-blue-100 rounded-xl p-8 text-center max-w-2xl mx-auto mt-12">
-                <h3 className="text-lg font-medium text-blue-900 mb-2">Sincronização de Dados</h3>
-                <p className="text-blue-700 mb-4">
-                  Se os contadores estiverem zerados, certifique-se que o "Proxy CORS" está ativado na aba Configurações.
-                </p>
-                <button onClick={() => setActiveTab('settings')} className="text-sm font-bold text-blue-600 hover:text-blue-800 underline">
-                  Ir para Configurações
-                </button>
-              </div>
-            )}
           </div>
         )}
 
