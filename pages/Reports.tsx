@@ -57,7 +57,6 @@ export const Reports: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [availableFunctions, setAvailableFunctions] = useState<string[]>([]);
   
-  // Controle de cancelamento de requisições
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const formatDateBR = (dateString: string | undefined | null) => {
@@ -180,11 +179,10 @@ export const Reports: React.FC = () => {
   };
 
   const handleGenerate = async () => {
-    // 1. Cancelar requisições anteriores
+    // 1. Cancelamento e Setup
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
     }
-    // 2. Criar novo controlador
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -197,143 +195,167 @@ export const Reports: React.FC = () => {
     setError(null);
 
     try {
-      let allRegistros: any[] = [];
-      let page = 1;
-      let keepFetching = true;
-      
-      // 3. Batch Size reduzido para evitar timeouts e bloqueios
-      const BATCH_SIZE = 250;
-      const MAX_TOTAL_RECORDS = 5000; 
-      
+      const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
-      const endDateLimit = `${filters.endDate} 23:59:59`;
+      
+      let allDateRegistros: any[] = [];
+      let page = 1;
+      let fetchedAll = false;
+      const MAX_PAGES = 100; // Limite alto para garantir busca completa
+      const PAGE_SIZE = 500;
 
-      while (keepFetching) {
+      // 2. Loop de Busca Principal (Idêntico ao ScoreManagement)
+      while (!fetchedAll && page <= MAX_PAGES) {
         if (controller.signal.aborted) break;
-
-        setLoadingProgress(`Buscando dados (${allRegistros.length} registros)...`);
+        setLoadingProgress(`Buscando página ${page}... (${allDateRegistros.length} registros)`);
         
-        // 4. Delay (Throttle) para não afogar a API/Navegador
-        await new Promise(r => setTimeout(r, 300));
+        // Delay para evitar bloqueio
+        await new Promise(r => setTimeout(r, 200));
 
-        const osData = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
+        const dateData = await safeFetch(url, {
           method: 'POST', 
           headers: config.headers, 
           body: JSON.stringify({ 
-              qtype: dateField, 
-              query: filters.startDate, 
-              oper: '>=', 
-              page: page.toString(), 
-              rp: BATCH_SIZE.toString(), 
-              sortname: dateField, 
-              sortorder: 'asc'
+            qtype: dateField, 
+            query: filters.startDate, 
+            oper: '>=', 
+            rp: String(PAGE_SIZE), 
+            page: String(page),
+            sortname: dateField, 
+            sortorder: 'desc' 
           }),
-          signal: controller.signal // Passar sinal de cancelamento
+          signal: controller.signal
         });
 
-        const batch = osData.registros || [];
-        
-        if (batch.length === 0) { 
-            keepFetching = false; 
-            break; 
-        }
+        const records = dateData.registros || [];
+        allDateRegistros = [...allDateRegistros, ...records];
 
-        // Verifica range
-        for (const reg of batch) {
-           const dateToCheck = filters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
-           
-           if (dateToCheck && dateToCheck > endDateLimit) {
-               keepFetching = false;
-               break; 
-           }
-
-           if (dateToCheck && dateToCheck >= filters.startDate && dateToCheck <= endDateLimit) {
-               allRegistros.push(reg);
-           }
+        if (records.length < PAGE_SIZE) {
+          fetchedAll = true;
+        } else {
+          page++;
         }
-        
-        if (allRegistros.length >= MAX_TOTAL_RECORDS) {
-            keepFetching = false;
-        }
-
-        if (batch.length < BATCH_SIZE) { keepFetching = false; } 
-        else if (keepFetching) { page++; }
-        
-        // Safety Break
-        if (page > 100) keepFetching = false;
       }
 
       if (controller.signal.aborted) return;
-      if (allRegistros.length === 0) { setReportData([]); setIsLoading(false); return; }
+
+      // 3. Busca de OS "Em Andamento" se filtrar por fechamento (Idêntico ao ScoreManagement)
+      setLoadingProgress('Verificando OS em andamento...');
+      const activePromise = filters.dateType === 'closing' ? safeFetch(url, {
+        method: 'POST', headers: config.headers, 
+        body: JSON.stringify({ qtype: 'su_oss_chamado.status', query: 'EN', oper: '=', rp: '200', sortname: 'su_oss_chamado.id', sortorder: 'desc' }),
+        signal: controller.signal
+      }) : Promise.resolve({ registros: [] });
+
+      const activeData = await activePromise.catch(() => ({ registros: [] }));
       
-      setLoadingProgress('Processando dados...');
+      // 4. Unificação e Normalização
+      const allRecords = [...allDateRegistros, ...(activeData.registros || [])];
+      
+      // Remove duplicatas
+      const uniqueRecordsMap = new Map();
+      allRecords.forEach((item: any) => uniqueRecordsMap.set(item.id, item));
+      let uniqueOrders = Array.from(uniqueRecordsMap.values());
 
-      // Mapeamento em memória
-      let orders: (ServiceOrder & { technicianGroup?: string })[] = allRegistros.map((reg: any) => {
-          const techId = String(reg.id_tecnico); 
-          let techName = `Técnico #${techId}`;
-          if (techId && techId !== '0' && employeesMap.has(techId)) { 
-             techName = employeesMap.get(techId)!.name; 
-          } else if (reg.tecnico) {
-             techName = reg.tecnico;
-          }
+      // Filtro de status se for por data de fechamento
+      if (filters.dateType === 'closing') {
+        uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
+      }
 
-          const rawFinal = reg.data_final;
-          const rawFechamento = reg.data_fechamento;
-          let closing = 'EM ABERTO';
-          let reopeningDate = '-';
-          if (rawFechamento && rawFechamento !== '0000-00-00 00:00:00') {
-              closing = rawFechamento;
-              if (rawFinal && rawFinal !== '0000-00-00 00:00:00') {
-                  const diffInSeconds = (new Date(rawFechamento).getTime() - new Date(rawFinal).getTime()) / 1000;
-                  if (diffInSeconds > 300) { closing = rawFinal; reopeningDate = rawFechamento; }
-              }
-          }
+      // 5. Mapeamento para Objeto ServiceOrder
+      const orders: (ServiceOrder & { technicianGroup?: string })[] = uniqueOrders.map((reg: any) => {
+        let techName = 'OS SEM TÉCNICO';
+        let sectorName = 'Sem Setor'; 
+        const techId = String(reg.id_tecnico); 
 
-          return {
-            id: reg.id,
-            technicianId: reg.id_tecnico,
-            technicianName: techName,
-            clientId: reg.id_cliente ? String(reg.id_cliente) : '',
-            clientName: '...', 
-            subjectId: reg.id_assunto,
-            subjectName: '', 
-            openingDate: reg.data_abertura,
-            closingDate: closing,
-            reopeningDate: reopeningDate, 
-            status: reg.status === 'F' ? 'Fechado' : reg.status === 'A' ? 'Aberto' : 'Em Andamento',
-            technicianGroup: String(reg.setor) 
-          };
+        if (techId && techId !== '0') {
+           const employee = employeesMap.get(techId);
+           techName = employee ? employee.name : (reg.tecnico || `Técnico #${techId}`);
+        } else if (reg.tecnico) {
+           techName = reg.tecnico;
+        }
+
+        if (reg.setor && reg.setor !== '0') {
+           const sId = String(reg.setor);
+           if (sectorsMap.has(sId)) {
+               sectorName = sectorsMap.get(sId)!;
+           } else {
+               sectorName = `Setor #${sId}`;
+           }
+        }
+        
+        const rawFinal = reg.data_final;
+        const rawFechamento = reg.data_fechamento;
+        let closingDate = 'EM ABERTO';
+        let reopeningDate = '-';
+
+        if (rawFechamento && rawFechamento !== '0000-00-00 00:00:00') {
+           closingDate = rawFechamento;
+           if (rawFinal && rawFinal !== '0000-00-00 00:00:00') {
+               const diffInSeconds = (new Date(rawFechamento).getTime() - new Date(rawFinal).getTime()) / 1000;
+               if (diffInSeconds > 300) { closingDate = rawFinal; reopeningDate = rawFechamento; }
+           }
+        }
+
+        return {
+          id: reg.id,
+          technicianId: reg.id_tecnico,
+          technicianName: techName,
+          technicianGroup: sectorName,
+          clientId: reg.id_cliente ? String(reg.id_cliente) : '',
+          clientName: '...',
+          subjectId: reg.id_assunto,
+          subjectName: '', // Assunto não é crítico para o relatório, mas id sim
+          openingDate: reg.data_abertura,
+          closingDate: closingDate,
+          reopeningDate: reopeningDate,
+          status: reg.status === 'F' ? 'Fechado' : reg.status === 'A' ? 'Aberto' : 'Em Andamento'
+        };
       });
 
-      // Filtragem final
-      orders = orders.filter(o => {
-        let relevantDate = filters.dateType === 'closing' && o.closingDate !== 'EM ABERTO' ? o.closingDate : o.openingDate;
-        return relevantDate >= filters.startDate && relevantDate <= endDateLimit;
+      // 6. Filtros Finais (Data Fim, Técnico, Setor)
+      const filteredOrders = orders.filter(order => {
+          const matchTech = filters.technicianId ? order.technicianId === filters.technicianId : true;
+          
+          let role = order.technicianGroup || 'Sem Setor';
+          const matchFunc = filters.function ? role === filters.function : true;
+
+          // Filtro de data estrito (O banco trouxe >= Inicio, agora filtramos <= Fim)
+          let relevantDate = filters.dateType === 'closing' && order.closingDate !== 'EM ABERTO' ? order.closingDate.split(' ')[0] : order.openingDate.split(' ')[0];
+          
+          // Se for filtro por fechamento, mas está em aberto (status EN), incluímos se corresponder aos outros filtros
+          if (filters.dateType === 'closing' && order.closingDate === 'EM ABERTO') {
+             return matchTech && matchFunc;
+          }
+
+          const matchDate = relevantDate >= filters.startDate && relevantDate <= filters.endDate;
+          
+          return matchTech && matchFunc && matchDate;
       });
 
+      // 7. Agrupamento para Relatório
+      setLoadingProgress('Processando relatório...');
       const grouped: Record<string, ReportData> = {};
       const clientIdsToResolve = new Set<string>();
 
-      orders.forEach(order => {
-        if (filters.technicianId && order.technicianId !== filters.technicianId) return;
-
-        let role = 'Sem Setor';
-        
-        if (order.technicianGroup && order.technicianGroup !== '0' && sectorsMap.has(order.technicianGroup)) {
-            role = sectorsMap.get(order.technicianGroup)!;
-        }
-
-        if (filters.function && role !== filters.function) return;
-
+      filteredOrders.forEach(order => {
         const groupKey = order.technicianId || order.technicianName;
+        
         if (!grouped[groupKey]) {
-          grouped[groupKey] = { technicianId: order.technicianId, technicianName: order.technicianName, role: role, totalOrders: 0, totalPoints: 0, orders: [] };
+          grouped[groupKey] = { 
+              technicianId: order.technicianId, 
+              technicianName: order.technicianName, 
+              role: order.technicianGroup || 'Sem Setor', 
+              totalOrders: 0, 
+              totalPoints: 0, 
+              orders: [] 
+          };
         }
         const pts = getPoints(order);
         grouped[groupKey].totalOrders += 1;
         grouped[groupKey].totalPoints += pts;
         grouped[groupKey].orders.push(order);
+        
         if (order.clientId) clientIdsToResolve.add(order.clientId);
       });
 
@@ -343,7 +365,7 @@ export const Reports: React.FC = () => {
 
       setReportData(result);
       
-      // Busca assíncrona de clientes (só se não cancelado)
+      // 8. Resolução de Clientes (Analítico)
       if (filters.type === 'ANALYTICAL' && clientIdsToResolve.size > 0 && !controller.signal.aborted) {
         const idsNeeded = Array.from(clientIdsToResolve).filter(id => !clientCache[id]);
         if (idsNeeded.length > 0) {
@@ -351,6 +373,7 @@ export const Reports: React.FC = () => {
            await resolveClients(idsNeeded, controller.signal);
         }
       }
+
     } catch (e: any) {
       if (e.message !== 'Busca cancelada.') {
           console.error(e);
