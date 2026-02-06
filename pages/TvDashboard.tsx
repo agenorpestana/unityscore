@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity } from 'lucide-react';
+import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
@@ -11,17 +11,20 @@ interface RankingItem {
 
 interface TechnicianHourlyLine {
     technicianName: string;
+    fullName: string;
     color: string;
     data: number[]; // Array de 12 posições (08h as 19h)
     totalToday: number;
+    lastHourCount: number; // Quantos fechou na última hora cheia
 }
 
+// Cores de alto contraste para fundo escuro
 const LINE_COLORS = [
-    '#10b981', // Emerald (Green)
-    '#3b82f6', // Blue
-    '#f59e0b', // Amber (Yellow)
-    '#ec4899', // Pink
-    '#8b5cf6', // Violet
+    '#22c55e', // Green 500
+    '#3b82f6', // Blue 500
+    '#eab308', // Yellow 500
+    '#f43f5e', // Rose 500
+    '#a855f7', // Purple 500
 ];
 
 export const TvDashboard: React.FC = () => {
@@ -36,10 +39,11 @@ export const TvDashboard: React.FC = () => {
   
   // New State for Line Chart
   const [hourlyLines, setHourlyLines] = useState<TechnicianHourlyLine[]>([]);
-  const [maxHourlyVolume, setMaxHourlyVolume] = useState(5); // Escala Y mínima
+  const [maxHourlyVolume, setMaxHourlyVolume] = useState(5); 
   
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
+  const [isUpdating, setIsUpdating] = useState(false);
 
   // Helpers
   const getApiConfig = useCallback(() => {
@@ -76,10 +80,14 @@ export const TvDashboard: React.FC = () => {
   };
 
   const loadData = async () => {
+    setIsUpdating(true);
     const config = getApiConfig();
-    if (!config) return;
+    if (!config) {
+        setIsUpdating(false);
+        return;
+    }
     
-    // Não seta loading=true para atualizações em background (manter tela estável)
+    // Loading inicial apenas
     if (!companyName || companyName === 'Carregando...') setLoading(true);
     
     setCompanyName(config.name);
@@ -116,7 +124,6 @@ export const TvDashboard: React.FC = () => {
         let page = 1;
         let keepFetching = true;
         
-        // Pega mais páginas para garantir volume
         while(keepFetching && page <= 100) { 
             const osRes = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
                 method: 'POST', headers: config.headers,
@@ -144,7 +151,8 @@ export const TvDashboard: React.FC = () => {
         const hourlyStatsToday: Record<string, number[]> = {};
         const totalTodayPerTech: Record<string, number> = {};
 
-        const todayDateStr = today.toLocaleDateString('pt-BR'); // Comparação simples de dia
+        const todayDateStr = today.toLocaleDateString('pt-BR');
+        const currentHour = today.getHours();
 
         allOrders.forEach((reg: any) => {
             const techId = String(reg.id_tecnico);
@@ -179,22 +187,21 @@ export const TvDashboard: React.FC = () => {
             }
 
             // HOURLY STATS (TODAY ONLY)
-            // Checa se é hoje
             if (closeDate.toLocaleDateString('pt-BR') === todayDateStr) {
                 const hour = closeDate.getHours();
                 
-                // Init structure if needed
                 if (!hourlyStatsToday[techId]) {
-                    hourlyStatsToday[techId] = new Array(12).fill(0); // 08,09...19
+                    hourlyStatsToday[techId] = new Array(12).fill(0); // 08h-19h
                     totalTodayPerTech[techId] = 0;
                 }
 
-                // Increment total
                 totalTodayPerTech[techId]++;
 
-                // Increment hour slot if within range (08h - 19h)
                 if (hour >= 8 && hour <= 19) {
                     const idx = hour - 8;
+                    // Acumulativo ou Absoluto? Para linha de evolução diária, geralmente é absoluto por hora
+                    // Mas se o usuário quer ver o "total subindo", seria acumulativo.
+                    // Vamos manter absoluto por hora (picos de produtividade) que é mais comum em dashboards de callcenter/isp
                     hourlyStatsToday[techId][idx]++;
                 }
             }
@@ -234,37 +241,47 @@ export const TvDashboard: React.FC = () => {
 
         const linesData: TechnicianHourlyLine[] = top5TodayIds.map((id, index) => {
             const data = hourlyStatsToday[id];
-            // Find max value in this array for Y-Axis scaling
             const maxInLine = Math.max(...data);
             if (maxInLine > calculatedMaxY) calculatedMaxY = maxInLine;
 
-            const name = techEmployees.get(id) || 'Unknown';
-            // Pega apenas o primeiro nome para a legenda não ficar gigante
-            const shortName = name.split(' ')[0];
+            const fullName = techEmployees.get(id) || 'Unknown';
+            const shortName = fullName.split(' ')[0];
+            
+            // Last active hour count (para o sparkline ou indicador)
+            const currentHourIdx = Math.max(0, Math.min(currentHour - 8, 11));
+            const lastCount = data[currentHourIdx] || 0;
 
             return {
                 technicianName: shortName,
+                fullName: fullName,
                 color: LINE_COLORS[index % LINE_COLORS.length],
                 data: data,
-                totalToday: totalTodayPerTech[id]
+                totalToday: totalTodayPerTech[id],
+                lastHourCount: lastCount
             };
         });
 
-        setMaxHourlyVolume(calculatedMaxY > 0 ? calculatedMaxY + 1 : 5); // +1 para respiro
+        // Se ninguém trabalhou hoje ainda, cria dados dummy zerados para 1 tecnico para não quebrar o layout
+        if (linesData.length === 0) {
+             setMaxHourlyVolume(5);
+        } else {
+             setMaxHourlyVolume(calculatedMaxY > 0 ? calculatedMaxY + 1 : 5);
+        }
+        
         setHourlyLines(linesData);
-
         setLastUpdated(new Date().toLocaleTimeString('pt-BR'));
 
     } catch (e) {
         console.error(e);
     } finally {
         setLoading(false);
+        setIsUpdating(false);
     }
   };
 
   useEffect(() => {
     loadData();
-    // Atualiza a cada 30 segundos para "Tempo Real"
+    // Atualiza a cada 30 segundos
     const interval = setInterval(loadData, 30000); 
     return () => clearInterval(interval);
   }, [getApiConfig]);
@@ -280,10 +297,10 @@ export const TvDashboard: React.FC = () => {
 
   // --- SVG CHART GENERATION HELPERS ---
   const hoursLabels = [8,9,10,11,12,13,14,15,16,17,18,19];
-  const chartHeight = 200; // SVG coordinate height
-  const chartWidth = 600;  // SVG coordinate width (viewBox)
+  const chartHeight = 250; 
+  const chartWidth = 600;  
   const paddingX = 40;
-  const paddingY = 20;
+  const paddingY = 30;
 
   const getX = (index: number) => {
       return paddingX + (index * ((chartWidth - (paddingX * 2)) / (hoursLabels.length - 1)));
@@ -296,195 +313,240 @@ export const TvDashboard: React.FC = () => {
   };
 
   const generatePath = (data: number[]) => {
+      // Se não tem dados, retorna linha no zero
+      if(!data || data.length === 0) return `M ${paddingX},${chartHeight-paddingY} L ${chartWidth-paddingX},${chartHeight-paddingY}`;
+
+      // Smooth Curve (Catmull-Rom or Simple Cubic Bezier could be better, but sticking to straight lines for clarity on TV)
+      // Para TV, linhas retas são mais fáceis de ler o valor exato no ponto.
       return data.map((val, idx) => 
           `${idx === 0 ? 'M' : 'L'} ${getX(idx)},${getY(val)}`
       ).join(' ');
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-6 overflow-hidden font-sans">
+    <div className="min-h-screen bg-slate-950 text-white p-6 overflow-hidden font-sans selection:bg-brand-500 selection:text-white">
       {/* Header */}
-      <header className="flex justify-between items-center mb-6 bg-slate-800/50 p-4 rounded-2xl border border-slate-700 shadow-xl backdrop-blur-sm">
-         <div className="flex items-center gap-4">
-             {logoUrl ? (
-                 <img src={logoUrl} alt="Logo" className="h-16 w-auto object-contain bg-white rounded-lg p-1" />
-             ) : (
-                 <div className="h-16 w-16 bg-brand-600 rounded-lg flex items-center justify-center text-2xl font-bold">{companyName.charAt(0)}</div>
-             )}
+      <header className="flex justify-between items-center mb-6 bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-2xl backdrop-blur-md">
+         <div className="flex items-center gap-5">
+             <div className="bg-white rounded-xl p-2 h-20 w-20 flex items-center justify-center shadow-lg">
+                {logoUrl ? (
+                    <img src={logoUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
+                ) : (
+                    <span className="text-3xl font-bold text-slate-800">{companyName.charAt(0)}</span>
+                )}
+             </div>
              <div>
-                 <h1 className="text-3xl font-bold tracking-tight text-white">{companyName}</h1>
-                 <p className="text-slate-400 flex items-center gap-2 text-sm"><TrendingUp size={16} /> Dashboard de Performance</p>
+                 <h1 className="text-4xl font-black tracking-tight text-white mb-1">{companyName}</h1>
+                 <p className="text-slate-400 flex items-center gap-2 font-medium uppercase tracking-widest text-xs">
+                    <Zap size={14} className="text-yellow-400" /> Performance em Tempo Real
+                 </p>
              </div>
          </div>
          <div className="text-right">
-             <div className="text-4xl font-mono font-bold text-brand-400">
+             <div className="text-5xl font-mono font-bold text-white tracking-tighter shadow-black drop-shadow-lg">
                  {new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
              </div>
-             <p className="text-slate-500 text-xs mt-1 flex items-center justify-end gap-1">
-                 <Activity size={10} className="text-green-500 animate-pulse" />
-                 Atualizado às {lastUpdated}
-             </p>
+             <div className="flex items-center justify-end gap-2 mt-2">
+                 <div className={`h-2 w-2 rounded-full ${isUpdating ? 'bg-green-400 animate-ping' : 'bg-slate-600'}`}></div>
+                 <p className="text-slate-500 text-xs font-mono">Última atualização: {lastUpdated}</p>
+             </div>
          </div>
       </header>
 
       {/* Grid Layout */}
-      <div className="grid grid-cols-12 gap-6 h-[calc(100vh-140px)]">
+      <div className="grid grid-cols-12 gap-6 h-[calc(100vh-170px)]">
           
           {/* Left Column: Rankings */}
-          <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
+          <div className="col-span-12 lg:col-span-4 flex flex-col gap-6 h-full">
               
               {/* Card: Top 3 Month */}
-              <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-5 flex-1 relative overflow-hidden flex flex-col">
-                  <div className="absolute top-0 right-0 p-4 opacity-5"><Trophy size={100} /></div>
-                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-yellow-400 uppercase tracking-wider"><Trophy size={20} /> Melhores do Mês</h2>
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col relative overflow-hidden h-1/2">
+                  <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Trophy size={140} /></div>
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+                      <Trophy size={24} className="text-yellow-400" />
+                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Campeões do Mês</h2>
+                  </div>
                   
-                  <div className="space-y-3 flex-1 overflow-y-auto pr-1">
+                  <div className="space-y-3 flex-1 overflow-y-auto pr-2 custom-scrollbar">
                       {topMonth.map((tech, idx) => (
-                          <div key={idx} className={`flex items-center gap-4 p-3 rounded-xl border ${idx === 0 ? 'bg-gradient-to-r from-yellow-500/20 to-transparent border-yellow-500/50' : 'bg-slate-700/50 border-slate-600'}`}>
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-md shadow-inner shrink-0
+                          <div key={idx} className={`flex items-center gap-4 p-3 rounded-xl border transition-all transform hover:scale-[1.02] ${idx === 0 ? 'bg-gradient-to-r from-yellow-900/40 to-slate-900 border-yellow-500/50 shadow-[0_0_15px_rgba(234,179,8,0.1)]' : 'bg-slate-800/40 border-slate-700'}`}>
+                              <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg shadow-inner shrink-0
                                   ${idx === 0 ? 'bg-yellow-500 text-yellow-950' : idx === 1 ? 'bg-slate-300 text-slate-900' : 'bg-amber-700 text-amber-100'}
                               `}>
-                                  {idx + 1}º
+                                  {idx + 1}
                               </div>
                               <div className="flex-1 min-w-0">
-                                  <p className="font-bold text-md truncate text-white">{tech.technicianName}</p>
-                                  <p className="text-xs text-slate-400">{tech.totalOrders} OS Fechadas</p>
+                                  <p className={`font-bold text-lg truncate ${idx === 0 ? 'text-yellow-400' : 'text-white'}`}>{tech.technicianName}</p>
+                                  <p className="text-xs text-slate-400 font-mono">{tech.totalOrders} OS Fechadas</p>
                               </div>
                               <div className="text-right shrink-0">
-                                  <span className="text-xl font-black text-brand-400">{tech.totalPoints}</span>
-                                  <p className="text-[9px] uppercase text-brand-600 font-bold">Pontos</p>
+                                  <span className={`text-2xl font-black ${idx === 0 ? 'text-yellow-400' : 'text-white'}`}>{tech.totalPoints}</span>
+                                  <p className="text-[9px] uppercase text-slate-500 font-bold">Pontos</p>
                               </div>
                           </div>
                       ))}
-                      {topMonth.length === 0 && <p className="text-slate-500 text-center py-4">Sem dados este mês.</p>}
+                      {topMonth.length === 0 && <p className="text-slate-600 text-center py-10 italic">Aguardando dados...</p>}
                   </div>
               </div>
 
               {/* Card: Top 3 Quarter */}
-              <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-5 flex-1 relative overflow-hidden flex flex-col">
-                  <div className="absolute top-0 right-0 p-4 opacity-5"><Medal size={100} /></div>
-                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-indigo-400 uppercase tracking-wider"><Medal size={20} /> Trimestre (Top 3)</h2>
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex-1 relative overflow-hidden flex flex-col h-1/2">
+                  <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Medal size={140} /></div>
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+                      <Medal size={24} className="text-indigo-400" />
+                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Top Trimestre</h2>
+                  </div>
                   
-                  <div className="space-y-3 flex-1 overflow-y-auto pr-1">
+                  <div className="space-y-3 flex-1 overflow-y-auto pr-2">
                       {topQuarter.map((tech, idx) => (
-                          <div key={idx} className="flex items-center gap-3 p-2 rounded-lg bg-slate-700/30 border border-slate-700/50">
-                               <div className="w-6 h-6 bg-slate-600 rounded-full flex items-center justify-center font-bold text-xs text-slate-300 shrink-0">{idx+1}</div>
-                               <div className="flex-1 truncate text-slate-200 text-sm font-medium">{tech.technicianName}</div>
-                               <div className="font-bold text-indigo-400 text-sm">{tech.totalPoints} <span className="text-[10px] text-indigo-600">pts</span></div>
+                          <div key={idx} className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/30 border border-slate-800">
+                               <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center font-bold text-sm text-slate-300 shrink-0 border border-slate-600">{idx+1}</div>
+                               <div className="flex-1 truncate text-slate-200 font-medium">{tech.technicianName}</div>
+                               <div className="font-bold text-indigo-400 text-lg">{tech.totalPoints} <span className="text-[10px] text-indigo-600 font-normal">pts</span></div>
                           </div>
                       ))}
-                      {topQuarter.length === 0 && <p className="text-slate-500 text-center py-4">Sem dados no trimestre.</p>}
+                      {topQuarter.length === 0 && <p className="text-slate-600 text-center py-10 italic">Aguardando dados...</p>}
                   </div>
               </div>
 
           </div>
 
           {/* Right Column: Analytics */}
-          <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
+          <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
-              {/* Hourly Evolution Line Chart (HOJE) */}
-              <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-6 h-1/2 flex flex-col relative overflow-hidden">
-                  <div className="flex justify-between items-start mb-2 relative z-10">
-                    <h2 className="text-lg font-bold flex items-center gap-2 text-emerald-400 uppercase tracking-wider">
-                        <Clock size={20} /> Evolução Diária (Top 5 - Hoje)
+              {/* Hourly Evolution Line Chart (HOJE) - REDESIGNED */}
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 h-[60%] flex flex-col relative overflow-hidden">
+                  
+                  {/* Header do Gráfico */}
+                  <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-10">
+                    <h2 className="text-xl font-bold flex items-center gap-3 text-emerald-400 uppercase tracking-wider">
+                        <Clock size={24} /> Produtividade Diária (Hoje)
                     </h2>
-                    <span className="text-xs text-white bg-red-600 px-2 py-1 rounded font-bold animate-pulse shadow-lg shadow-red-500/50">AO VIVO</span>
+                    <div className="flex items-center gap-2 bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
+                         <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                         <span className="text-xs font-bold text-white">EM TEMPO REAL</span>
+                    </div>
                   </div>
                   
-                  {/* SVG Chart Container */}
-                  <div className="flex-1 w-full h-full relative">
-                      {hourlyLines.length === 0 ? (
-                          <div className="absolute inset-0 flex items-center justify-center text-slate-500">
-                             Aguardando primeiros fechamentos de hoje...
-                          </div>
-                      ) : (
-                          <div className="w-full h-full flex flex-col">
-                              {/* Chart Area */}
-                              <div className="flex-1 relative">
-                                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" className="w-full h-full overflow-visible">
-                                      {/* Grid Lines Y */}
-                                      {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
-                                          const y = (chartHeight - paddingY) - (tick * (chartHeight - (paddingY * 2)));
-                                          return (
-                                              <g key={tick}>
-                                                  <line x1={paddingX} y1={y} x2={chartWidth} y2={y} stroke="#334155" strokeWidth="1" strokeDasharray="4" />
-                                                  <text x={paddingX - 5} y={y + 3} fill="#64748b" fontSize="10" textAnchor="end">
-                                                      {Math.round(tick * maxHourlyVolume)}
-                                                  </text>
-                                              </g>
-                                          );
-                                      })}
-
-                                      {/* X Axis Labels */}
-                                      {hoursLabels.map((hour, idx) => (
-                                          <text key={hour} x={getX(idx)} y={chartHeight} fill="#94a3b8" fontSize="10" textAnchor="middle">
-                                              {hour}h
-                                          </text>
-                                      ))}
-
-                                      {/* Data Lines */}
-                                      {hourlyLines.map((line, idx) => (
-                                          <g key={idx}>
-                                              {/* The Line */}
-                                              <path 
-                                                  d={generatePath(line.data)} 
-                                                  fill="none" 
-                                                  stroke={line.color} 
-                                                  strokeWidth="3" 
-                                                  strokeLinecap="round"
-                                                  strokeLinejoin="round"
-                                                  className="drop-shadow-lg"
-                                              />
-                                              {/* The Dots */}
-                                              {line.data.map((val, dIdx) => (
-                                                  <circle 
-                                                    key={dIdx} 
-                                                    cx={getX(dIdx)} 
-                                                    cy={getY(val)} 
-                                                    r="3" 
-                                                    fill={line.color} 
-                                                    stroke="#1e293b" 
-                                                    strokeWidth="1"
-                                                  />
-                                              ))}
+                  <div className="flex flex-1 overflow-hidden">
+                      {/* LADO ESQUERDO: GRÁFICO SVG */}
+                      <div className="flex-[3] relative p-4 h-full">
+                          {hourlyLines.length === 0 ? (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
+                                 <Clock size={48} className="mb-2 opacity-50"/>
+                                 <p>Aguardando primeiros fechamentos de hoje...</p>
+                              </div>
+                          ) : (
+                              <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                                  {/* Grid Lines Y */}
+                                  {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+                                      const y = (chartHeight - paddingY) - (tick * (chartHeight - (paddingY * 2)));
+                                      return (
+                                          <g key={tick}>
+                                              <line x1={paddingX} y1={y} x2={chartWidth} y2={y} stroke="#1e293b" strokeWidth="1" strokeDasharray="4" />
+                                              <text x={paddingX - 10} y={y + 4} fill="#475569" fontSize="12" textAnchor="end" fontWeight="bold">
+                                                  {Math.round(tick * maxHourlyVolume)}
+                                              </text>
                                           </g>
-                                      ))}
-                                  </svg>
-                              </div>
-                              
-                              {/* Legend */}
-                              <div className="h-8 flex items-center justify-center gap-4 mt-2">
-                                  {hourlyLines.map((line, idx) => (
-                                      <div key={idx} className="flex items-center gap-2 bg-slate-700/50 px-3 py-1 rounded-full border border-slate-600">
-                                          <div className="w-3 h-3 rounded-full" style={{backgroundColor: line.color}}></div>
-                                          <span className="text-xs font-bold text-slate-200">{line.technicianName}</span>
-                                          <span className="text-[10px] text-slate-400 font-mono">({line.totalToday})</span>
-                                      </div>
+                                      );
+                                  })}
+
+                                  {/* X Axis Labels */}
+                                  {hoursLabels.map((hour, idx) => (
+                                      <text key={hour} x={getX(idx)} y={chartHeight} fill="#94a3b8" fontSize="12" fontWeight="bold" textAnchor="middle">
+                                          {hour}h
+                                      </text>
                                   ))}
+
+                                  {/* Data Lines */}
+                                  {hourlyLines.map((line, idx) => (
+                                      <g key={idx}>
+                                          {/* Glow Effect */}
+                                          <path 
+                                              d={generatePath(line.data)} 
+                                              fill="none" 
+                                              stroke={line.color} 
+                                              strokeWidth="6" 
+                                              strokeOpacity="0.2"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                          />
+                                          {/* The Line */}
+                                          <path 
+                                              d={generatePath(line.data)} 
+                                              fill="none" 
+                                              stroke={line.color} 
+                                              strokeWidth="3" 
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              className="drop-shadow-md"
+                                          />
+                                          {/* The Dots */}
+                                          {line.data.map((val, dIdx) => (
+                                              <circle 
+                                                key={dIdx} 
+                                                cx={getX(dIdx)} 
+                                                cy={getY(val)} 
+                                                r={val > 0 ? 4 : 2} 
+                                                fill="#0f172a" 
+                                                stroke={line.color} 
+                                                strokeWidth="2"
+                                              />
+                                          ))}
+                                      </g>
+                                  ))}
+                              </svg>
+                          )}
+                      </div>
+
+                      {/* LADO DIREITO: LEADERBOARD (LEGENDA GRANDE) */}
+                      <div className="flex-[1] border-l border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-2 overflow-y-auto">
+                          <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Líderes de Hoje</h3>
+                          {hourlyLines.length === 0 && <p className="text-slate-700 text-xs italic">Sem dados.</p>}
+                          {hourlyLines.map((line, idx) => (
+                              <div key={idx} className="flex items-center justify-between p-3 rounded-lg bg-slate-800 border border-slate-700 shadow-sm relative overflow-hidden group">
+                                  {/* Color Indicator Strip */}
+                                  <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{backgroundColor: line.color}}></div>
+                                  
+                                  <div className="pl-2">
+                                      <div className="text-sm font-bold text-white truncate max-w-[100px]">{line.technicianName}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono">
+                                          {line.lastHourCount > 0 ? <span className="text-green-400 flex items-center gap-1">+{line.lastHourCount} na última hora</span> : <span>Estável</span>}
+                                      </div>
+                                  </div>
+                                  <div className="text-right">
+                                      <div className="text-2xl font-black" style={{color: line.color}}>{line.totalToday}</div>
+                                      <div className="text-[9px] text-slate-500 uppercase">Total</div>
+                                  </div>
                               </div>
-                          </div>
-                      )}
+                          ))}
+                      </div>
                   </div>
               </div>
 
               {/* Top 10 Volume */}
-              <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-5 h-1/2 flex flex-col">
-                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-blue-400 uppercase tracking-wider"><CheckCircle size={20} /> Top 10 - Mais OS Fechadas (Mês)</h2>
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 h-[40%] flex flex-col">
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+                     <CheckCircle size={24} className="text-blue-400" />
+                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
+                  </div>
+                  
                   <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-2 overflow-y-auto pr-2">
                        {topOsMonth.map((tech, idx) => (
-                           <div key={idx} className="flex items-center justify-between border-b border-slate-700/50 py-2">
+                           <div key={idx} className="flex items-center justify-between border-b border-slate-800/50 py-2 group hover:bg-slate-800/30 rounded px-2 transition-colors">
                                <div className="flex items-center gap-3 min-w-0">
-                                   <span className="text-slate-500 font-mono text-sm w-4 shrink-0">{idx+1}</span>
-                                   <span className="text-slate-200 text-sm font-medium truncate">{tech.technicianName}</span>
+                                   <span className="text-slate-600 font-mono text-sm w-5 shrink-0 font-bold group-hover:text-slate-400">{idx+1}.</span>
+                                   <span className="text-slate-300 text-base font-medium truncate group-hover:text-white">{tech.technicianName}</span>
                                </div>
-                               <div className="flex items-center gap-2 shrink-0">
-                                   <div className="h-2 w-16 md:w-24 bg-slate-700 rounded-full overflow-hidden">
-                                       <div className="h-full bg-blue-500" style={{width: `${Math.min(tech.totalOrders * 2, 100)}%`}}></div>
+                               <div className="flex items-center gap-3 shrink-0">
+                                   <div className="h-2.5 w-16 md:w-32 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                                       <div className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{width: `${Math.min(tech.totalOrders * 1.5, 100)}%`}}></div>
                                    </div>
-                                   <span className="text-blue-400 font-bold text-sm w-8 text-right">{tech.totalOrders}</span>
+                                   <span className="text-white font-bold text-lg w-8 text-right">{tech.totalOrders}</span>
                                </div>
                            </div>
                        ))}
+                       {topOsMonth.length === 0 && <p className="col-span-2 text-center text-slate-600 py-10">Aguardando dados de fechamento...</p>}
                   </div>
               </div>
 
