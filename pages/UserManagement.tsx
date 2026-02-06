@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon } from 'lucide-react';
-import { User, Permission } from '../types';
+import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2 } from 'lucide-react';
+import { User, Permission, Company } from '../types';
 
 export const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [currentCompanyId, setCurrentCompanyId] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState<Partial<User>>({
@@ -21,31 +24,36 @@ export const UserManagement: React.FC = () => {
   });
 
   useEffect(() => {
-    // Mock initial data or load from storage
-    const storedUsers = localStorage.getItem('unity_users');
-    if (storedUsers) {
-      setUsers(JSON.parse(storedUsers));
-    } else {
-      // Default super admin visible in list for demo
-      const initialUsers: User[] = [
-        {
-          id: '1',
-          name: 'Suporte Unity',
-          email: 'suporte@unityautomacoes.com.br',
-          role: 'super_admin',
-          active: true,
-          permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true }
+    // Carregar ID da empresa do cache local ou sessão
+    const savedCompany = localStorage.getItem('unity_company_data');
+    if (savedCompany) {
+        const company: Company = JSON.parse(savedCompany);
+        if (company.id) {
+            setCurrentCompanyId(company.id);
+            fetchUsers(company.id);
         }
-      ];
-      setUsers(initialUsers);
-      localStorage.setItem('unity_users', JSON.stringify(initialUsers));
     }
   }, []);
+
+  const fetchUsers = async (companyId: string) => {
+      setIsLoading(true);
+      try {
+          const res = await fetch(`/api/users?companyId=${companyId}`);
+          if (res.ok) {
+              const data = await res.json();
+              setUsers(data);
+          }
+      } catch (e) {
+          console.error("Erro ao carregar usuários:", e);
+      } finally {
+          setIsLoading(false);
+      }
+  };
 
   const handleOpenModal = (user?: User) => {
     if (user) {
       setEditingUser(user);
-      setFormData(user);
+      setFormData({ ...user, password: '' }); // Limpa senha para não exibir hash
     } else {
       setEditingUser(null);
       setFormData({
@@ -64,33 +72,47 @@ export const UserManagement: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (confirm('Tem certeza que deseja remover este usuário?')) {
-      const updated = users.filter(u => u.id !== id);
-      setUsers(updated);
-      localStorage.setItem('unity_users', JSON.stringify(updated));
+        try {
+            const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+            if (res.ok && currentCompanyId) {
+                fetchUsers(currentCompanyId);
+            }
+        } catch (e) {
+            alert('Erro ao excluir usuário');
+        }
     }
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    let updatedUsers = [...users];
+    if (!currentCompanyId) return;
 
-    if (editingUser) {
-      updatedUsers = updatedUsers.map(u => 
-        u.id === editingUser.id ? { ...u, ...formData } as User : u
-      );
-    } else {
-      const newUser: User = {
-        ...formData as User,
-        id: Date.now().toString(),
-      };
-      updatedUsers.push(newUser);
+    setIsSaving(true);
+    try {
+        const url = editingUser ? `/api/users/${editingUser.id}` : '/api/users';
+        const method = editingUser ? 'PUT' : 'POST';
+        const body = { ...formData, companyId: currentCompanyId };
+
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (res.ok) {
+            setIsModalOpen(false);
+            fetchUsers(currentCompanyId);
+        } else {
+            const err = await res.json();
+            alert(`Erro ao salvar: ${err.error || 'Erro desconhecido'}`);
+        }
+    } catch (e) {
+        alert('Erro de conexão ao salvar usuário');
+    } finally {
+        setIsSaving(false);
     }
-
-    setUsers(updatedUsers);
-    localStorage.setItem('unity_users', JSON.stringify(updatedUsers));
-    setIsModalOpen(false);
   };
 
   const togglePermission = (key: keyof Permission) => {
@@ -120,6 +142,9 @@ export const UserManagement: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        {isLoading ? (
+            <div className="p-8 text-center flex justify-center"><Loader2 className="animate-spin text-brand-600" /></div>
+        ) : (
         <table className="w-full text-left">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
@@ -131,7 +156,9 @@ export const UserManagement: React.FC = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {users.map(user => (
+            {users.length === 0 ? (
+                <tr><td colSpan={5} className="p-6 text-center text-gray-500">Nenhum usuário encontrado.</td></tr>
+            ) : users.map(user => (
               <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
@@ -183,12 +210,13 @@ export const UserManagement: React.FC = () => {
             ))}
           </tbody>
         </table>
+        )}
       </div>
 
       {/* Modal for Add/Edit User */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all animate-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
               <h3 className="text-lg font-bold text-gray-900">
                 {editingUser ? 'Editar Usuário' : 'Novo Usuário'}
@@ -277,8 +305,10 @@ export const UserManagement: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700"
+                  disabled={isSaving}
+                  className="px-4 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 flex items-center gap-2"
                 >
+                  {isSaving && <Loader2 className="animate-spin" size={16} />}
                   Salvar Usuário
                 </button>
               </div>

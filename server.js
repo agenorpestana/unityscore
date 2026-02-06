@@ -183,6 +183,63 @@ app.use('/api/ixc-proxy', async (req, res) => {
     }
 });
 
+// --- GESTÃO DE USUÁRIOS (TENANT) ---
+
+// Listar Usuários da Empresa
+app.get('/api/users', async (req, res) => {
+    const companyId = req.query.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
+    try {
+        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions FROM users WHERE company_id = ?', [companyId]);
+        const users = rows.map(u => ({
+            ...u,
+            permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
+            active: !!u.active
+        }));
+        res.json(users);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Criar Usuário
+app.post('/api/users', async (req, res) => {
+    const { companyId, name, email, password, role, permissions, active } = req.body;
+    try {
+        const [result] = await pool.query(
+            'INSERT INTO users (company_id, name, email, password, role, permissions, active) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [companyId, name, email, password, role, JSON.stringify(permissions), active]
+        );
+        res.json({ success: true, id: result.insertId });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Editar Usuário
+app.put('/api/users/:id', async (req, res) => {
+    const { name, email, password, permissions, active } = req.body;
+    try {
+        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?';
+        let params = [name, email, JSON.stringify(permissions), active];
+        
+        if (password && password.trim() !== '') {
+            query += ', password=?';
+            params.push(password);
+        }
+        
+        query += ' WHERE id=?';
+        params.push(req.params.id);
+
+        await pool.query(query, params);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Deletar Usuário
+app.delete('/api/users/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- ROTAS DO SISTEMA (Login, SaaS, etc) ---
 
 app.post('/api/login', async (req, res) => {
