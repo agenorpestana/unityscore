@@ -189,28 +189,27 @@ export const Reports: React.FC = () => {
       let allRegistros: any[] = [];
       let page = 1;
       let keepFetching = true;
-      const BATCH_SIZE = 500; // Aumentado para 500 para trazer mais dados por vez
-      const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
+      const BATCH_SIZE = 500;
+      const MAX_TOTAL_RECORDS = 5000; // Limite expandido solicitado
       
-      // Adiciona o horário final do dia para garantir que pegue todo o dia final
-      const queryDate = `${filters.endDate} 23:59:59`;
+      const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
+      const endDateLimit = `${filters.endDate} 23:59:59`;
 
       while (keepFetching) {
-        setLoadingProgress(`Buscando página ${page}...`);
+        setLoadingProgress(`Buscando dados (${allRegistros.length} registros)...`);
         
-        // Busca REVERSA (Do mais novo para o mais antigo) usando <= Data Final
-        // Isso garante que começamos do fim do período e vamos voltando até passar da data inicial
+        // Busca NORMAL (ASCendente) a partir da data de início
         const osData = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
           method: 'POST', 
           headers: config.headers, 
           body: JSON.stringify({ 
               qtype: dateField, 
-              query: queryDate, 
-              oper: '<=', // Menor ou igual à data fim (Busca para trás)
+              query: filters.startDate, 
+              oper: '>=', // Maior ou igual à data de início
               page: page.toString(), 
               rp: BATCH_SIZE.toString(), 
               sortname: dateField, 
-              sortorder: 'desc' // Do mais recente para o mais antigo
+              sortorder: 'asc' // Ordem normal
           })
         });
 
@@ -221,35 +220,31 @@ export const Reports: React.FC = () => {
             break; 
         }
 
-        let addedCount = 0;
+        // Verifica se já passamos da data final
         for (const reg of batch) {
            const dateToCheck = filters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
            
-           if (dateToCheck && dateToCheck !== '0000-00-00 00:00:00') {
-             // Como estamos vindo do futuro (DESC), se encontrarmos uma data MENOR que a data inicial,
-             // significa que já pegamos tudo que precisava e saímos do range.
-             if (dateToCheck < filters.startDate) { 
-                 keepFetching = false; 
-                 // Não damos break imediato no loop interno para garantir que desordens pequenas de horário não cortem dados,
-                 // mas marcamos para parar a paginação.
-                 continue; 
-             }
-             
-             // Adiciona apenas se estiver dentro do range (Data >= Inicio)
-             // A verificação <= Fim já é garantida pela query da API
-             if (dateToCheck >= filters.startDate) {
-                allRegistros.push(reg);
-                addedCount++;
-             }
+           if (dateToCheck && dateToCheck > endDateLimit) {
+               // Passou da data final, pode parar
+               keepFetching = false;
+               break; 
+           }
+
+           // Se estiver dentro do range, adiciona
+           if (dateToCheck && dateToCheck >= filters.startDate && dateToCheck <= endDateLimit) {
+               allRegistros.push(reg);
            }
         }
         
-        // Se a página veio cheia mas nada foi adicionado (tudo muito antigo ou fora de range), paramos
+        if (allRegistros.length >= MAX_TOTAL_RECORDS) {
+            keepFetching = false;
+        }
+
         if (batch.length < BATCH_SIZE) { keepFetching = false; } 
         else if (keepFetching) { page++; }
         
-        // Limite de segurança aumentado
-        if (page > 300) keepFetching = false;
+        // Limite de segurança de requisições
+        if (page > 50) keepFetching = false;
       }
 
       if (allRegistros.length === 0) { setReportData([]); setIsLoading(false); return; }
@@ -292,11 +287,10 @@ export const Reports: React.FC = () => {
           };
       });
 
-      // Filtragem final em memória para garantir consistência
+      // Filtragem final
       orders = orders.filter(o => {
         let relevantDate = filters.dateType === 'closing' && o.closingDate !== 'EM ABERTO' ? o.closingDate : o.openingDate;
-        // Comparação de string funciona bem para ISO/DB format YYYY-MM-DD HH:mm:ss
-        return relevantDate >= filters.startDate && relevantDate <= queryDate;
+        return relevantDate >= filters.startDate && relevantDate <= endDateLimit;
       });
 
       const grouped: Record<string, ReportData> = {};

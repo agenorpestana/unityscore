@@ -26,16 +26,23 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isTvMode, setIsTvMode] = useState(false);
 
-  // Check for TV Mode in URL on mount
+  // 1. Check for TV Mode in URL on mount
+  // 2. Check for Persisted User Session (F5 fix)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('mode') === 'tv') {
         setIsTvMode(true);
-        // Tenta autenticar silenciosamente via localStorage para exibir o dashboard
-        const savedUser = localStorage.getItem('unity_user_session'); // Se você salvar a sessão
-        // Como o auth state reseta no refresh, o TvDashboard deve funcionar independentemente do AuthState
-        // se tiver os dados da empresa no localStorage.
-        // O ideal é ter a empresa configurada.
+    } else {
+        // Tenta recuperar sessão salva
+        const savedSession = localStorage.getItem('unity_user_session');
+        if (savedSession) {
+            try {
+                const user = JSON.parse(savedSession);
+                setAuth({ isAuthenticated: true, user });
+            } catch (e) {
+                localStorage.removeItem('unity_user_session');
+            }
+        }
     }
   }, []);
 
@@ -55,6 +62,10 @@ const App: React.FC = () => {
       isAuthenticated: true,
       user: user
     });
+    
+    // Salva sessão para persistir no F5
+    localStorage.setItem('unity_user_session', JSON.stringify(user));
+
     // Atualiza/Cria dados da empresa no localStorage para facilitar acesso dos componentes
     if (user.companyId) {
         // Tenta manter o token existente se já houver
@@ -70,6 +81,7 @@ const App: React.FC = () => {
       isAuthenticated: false,
       user: null
     });
+    localStorage.removeItem('unity_user_session'); // Remove sessão ao sair
     setActiveTab('dashboard');
   };
 
