@@ -70,11 +70,18 @@ export const TvDashboard: React.FC = () => {
   const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = rules[order.subjectId]?.points || 0;
+    
+    // Lógica de Penalidade por Reabertura
     if (order.reopeningDate && order.reopeningDate !== '-') {
         // Cálculo simples de dias para evitar timezone no Date object
+        // Usa apenas a parte da data YYYY-MM-DD
         const d1 = new Date(order.closingDate.split(' ')[0]);
         const d2 = new Date(order.reopeningDate.split(' ')[0]);
+        
+        // Diferença em dias
         const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+        
+        // Se reaberto em até 30 dias, aplica penalidade (pontos negativos)
         if (diffDays <= 30) points = -Math.abs(points);
     }
     return points;
@@ -167,8 +174,26 @@ export const TvDashboard: React.FC = () => {
 
             const techName = techEmployees.get(techId)!;
             
-            // Importante: Tratamento de String direto para evitar problema de Timezone
-            const closingDateStr = reg.data_fechamento; // "YYYY-MM-DD HH:mm:ss"
+            // Tratamento de Datas (Consistente com Reports.tsx)
+            let closingDateStr = reg.data_fechamento;
+            let reopeningDateStr = '-';
+
+            // Verifica Reabertura com tolerância de 5 minutos (300s)
+            if (reg.data_fechamento && reg.data_fechamento !== '0000-00-00 00:00:00') {
+                if (reg.data_final && reg.data_final !== '0000-00-00 00:00:00') {
+                     // Calcula diferença em segundos
+                     const dFechamento = new Date(reg.data_fechamento).getTime();
+                     const dFinal = new Date(reg.data_final).getTime();
+                     const diffSeconds = Math.abs(dFechamento - dFinal) / 1000;
+
+                     // Se diferença maior que 300s, considera como reabertura
+                     if (diffSeconds > 300) {
+                         closingDateStr = reg.data_final;
+                         reopeningDateStr = reg.data_fechamento;
+                     }
+                }
+            }
+
             if (!closingDateStr) return;
 
             // Normalize Object
@@ -177,14 +202,15 @@ export const TvDashboard: React.FC = () => {
                 technicianId: techId,
                 technicianName: techName,
                 clientId: '', clientName: '', subjectId: reg.id_assunto, subjectName: '',
-                openingDate: reg.data_abertura, closingDate: closingDateStr, 
-                reopeningDate: (reg.data_final && reg.data_fechamento && reg.data_final !== reg.data_fechamento) ? reg.data_final : '-',
+                openingDate: reg.data_abertura, 
+                closingDate: closingDateStr, 
+                reopeningDate: reopeningDateStr,
                 status: 'Fechado'
             };
 
             const points = getPoints(orderObj, rules);
 
-            // Quarter Stats (Simplificado: Acumula tudo que veio na query "Last 3 months")
+            // Quarter Stats
             if (!statsQuarter[techId]) statsQuarter[techId] = { pts: 0, count: 0, name: techName };
             statsQuarter[techId].pts += points;
             statsQuarter[techId].count += 1;
@@ -198,8 +224,7 @@ export const TvDashboard: React.FC = () => {
 
             // HOURLY STATS (TODAY ONLY) - String Comparison
             if (closingDateStr.startsWith(todayPrefix)) {
-                // Parse Hour from String "YYYY-MM-DD HH:mm:ss"
-                // Split by space -> get time part -> split by colon -> get hour
+                // Parse Hour from String
                 const timePart = closingDateStr.split(' ')[1]; // "HH:mm:ss"
                 const hourStr = timePart ? timePart.split(':')[0] : null;
                 
