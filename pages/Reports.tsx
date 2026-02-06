@@ -189,27 +189,67 @@ export const Reports: React.FC = () => {
       let allRegistros: any[] = [];
       let page = 1;
       let keepFetching = true;
-      const BATCH_SIZE = 150; 
+      const BATCH_SIZE = 500; // Aumentado para 500 para trazer mais dados por vez
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
+      
+      // Adiciona o horário final do dia para garantir que pegue todo o dia final
+      const queryDate = `${filters.endDate} 23:59:59`;
 
       while (keepFetching) {
         setLoadingProgress(`Buscando página ${page}...`);
-        if (page > 1) await new Promise(r => setTimeout(r, 200));
+        
+        // Busca REVERSA (Do mais novo para o mais antigo) usando <= Data Final
+        // Isso garante que começamos do fim do período e vamos voltando até passar da data inicial
         const osData = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
-          method: 'POST', headers: config.headers, body: JSON.stringify({ qtype: dateField, query: filters.startDate, oper: '>=', page: page.toString(), rp: BATCH_SIZE.toString(), sortname: dateField, sortorder: 'asc' })
+          method: 'POST', 
+          headers: config.headers, 
+          body: JSON.stringify({ 
+              qtype: dateField, 
+              query: queryDate, 
+              oper: '<=', // Menor ou igual à data fim (Busca para trás)
+              page: page.toString(), 
+              rp: BATCH_SIZE.toString(), 
+              sortname: dateField, 
+              sortorder: 'desc' // Do mais recente para o mais antigo
+          })
         });
+
         const batch = osData.registros || [];
-        if (batch.length === 0) { keepFetching = false; break; }
+        
+        if (batch.length === 0) { 
+            keepFetching = false; 
+            break; 
+        }
+
+        let addedCount = 0;
         for (const reg of batch) {
            const dateToCheck = filters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
+           
            if (dateToCheck && dateToCheck !== '0000-00-00 00:00:00') {
-             const datePart = dateToCheck.split(' ')[0];
-             if (datePart > filters.endDate) { keepFetching = false; break; }
-             allRegistros.push(reg);
+             // Como estamos vindo do futuro (DESC), se encontrarmos uma data MENOR que a data inicial,
+             // significa que já pegamos tudo que precisava e saímos do range.
+             if (dateToCheck < filters.startDate) { 
+                 keepFetching = false; 
+                 // Não damos break imediato no loop interno para garantir que desordens pequenas de horário não cortem dados,
+                 // mas marcamos para parar a paginação.
+                 continue; 
+             }
+             
+             // Adiciona apenas se estiver dentro do range (Data >= Inicio)
+             // A verificação <= Fim já é garantida pela query da API
+             if (dateToCheck >= filters.startDate) {
+                allRegistros.push(reg);
+                addedCount++;
+             }
            }
         }
-        if (batch.length < BATCH_SIZE) { keepFetching = false; } else if (keepFetching) { page++; }
-        if (page > 200) keepFetching = false;
+        
+        // Se a página veio cheia mas nada foi adicionado (tudo muito antigo ou fora de range), paramos
+        if (batch.length < BATCH_SIZE) { keepFetching = false; } 
+        else if (keepFetching) { page++; }
+        
+        // Limite de segurança aumentado
+        if (page > 300) keepFetching = false;
       }
 
       if (allRegistros.length === 0) { setReportData([]); setIsLoading(false); return; }
@@ -231,7 +271,6 @@ export const Reports: React.FC = () => {
           if (rawFechamento && rawFechamento !== '0000-00-00 00:00:00') {
               closing = rawFechamento;
               if (rawFinal && rawFinal !== '0000-00-00 00:00:00') {
-                  // Aumentado para 300 segundos (5 minutos)
                   const diffInSeconds = (new Date(rawFechamento).getTime() - new Date(rawFinal).getTime()) / 1000;
                   if (diffInSeconds > 300) { closing = rawFinal; reopeningDate = rawFechamento; }
               }
@@ -253,9 +292,11 @@ export const Reports: React.FC = () => {
           };
       });
 
+      // Filtragem final em memória para garantir consistência
       orders = orders.filter(o => {
-        let relevantDate = filters.dateType === 'closing' && o.closingDate !== 'EM ABERTO' ? o.closingDate.split(' ')[0] : o.openingDate.split(' ')[0];
-        return relevantDate >= filters.startDate && relevantDate <= filters.endDate;
+        let relevantDate = filters.dateType === 'closing' && o.closingDate !== 'EM ABERTO' ? o.closingDate : o.openingDate;
+        // Comparação de string funciona bem para ISO/DB format YYYY-MM-DD HH:mm:ss
+        return relevantDate >= filters.startDate && relevantDate <= queryDate;
       });
 
       const grouped: Record<string, ReportData> = {};
@@ -307,7 +348,8 @@ export const Reports: React.FC = () => {
     if (!config) return;
     const url = buildUrl(config, '/webservice/v1/cliente');
     
-    const batchSize = 4;
+    // Aumentado batch size para resolver nomes mais rápido
+    const batchSize = 10;
     
     for (let i = 0; i < ids.length; i += batchSize) {
       const batch = ids.slice(i, i + batchSize);
@@ -317,10 +359,10 @@ export const Reports: React.FC = () => {
         let attempts = 0;
         let success = false;
         
-        while (attempts < 3 && !success) {
+        while (attempts < 2 && !success) { // Reduzido tentativas para não travar
             try {
               const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 15000);
+              const timeoutId = setTimeout(() => controller.abort(), 10000);
 
               const res = await safeFetch(url, { 
                 method: 'POST', 
@@ -344,17 +386,17 @@ export const Reports: React.FC = () => {
               }
             } catch (e) { 
                attempts++;
-               if (attempts >= 3) {
+               if (attempts >= 2) {
                    newResolved[id] = `Cliente #${id}`; 
                } else {
-                   await new Promise(r => setTimeout(r, 1000 * attempts));
+                   await new Promise(r => setTimeout(r, 500 * attempts));
                }
             }
         }
       }));
 
       setClientCache(prev => ({ ...prev, ...newResolved }));
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 100));
     }
   };
 
