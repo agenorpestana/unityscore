@@ -19,13 +19,15 @@ export interface Company {
   id: string;
   name: string;
   cnpj: string;
-  address: string;
+  address?: string;
   email?: string;
+  email_contact?: string; // Mapeamento DB
   phone?: string;
   ixcDomain: string;
   ixcToken: string;
   useCorsProxy: boolean;
   logoUrl: string | null;
+  status?: 'active' | 'inactive' | 'suspended';
 }
 
 // Novos tipos para o SaaS Admin
@@ -33,7 +35,8 @@ export interface SaaSPlan {
   id: string;
   name: string;
   price: number;
-  maxUsers: number;
+  maxUsers: number; // Mapped from max_users in DB
+  max_users?: number; // DB field name fallback
   active: boolean;
 }
 
@@ -42,9 +45,13 @@ export interface SaaSCompany {
   name: string;
   cnpj: string;
   emailContact: string;
+  email_contact?: string; // DB field fallback
   planId: string;
+  plan_id?: string; // DB field fallback
+  planName?: string; // Joined field
   status: 'active' | 'inactive' | 'suspended';
   expirationDate: string;
+  expiration_date?: string; // DB field fallback
   ixcDomain?: string; // Para fins de debug do admin
 }
 

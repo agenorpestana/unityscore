@@ -35,20 +35,47 @@ async function initDatabase() {
         
         console.log('🔧 Verificando estrutura do banco de dados...');
 
-        // 1. Tabela de Empresas (Tenants)
+        // 1. Tabela de Planos SaaS
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS saas_plans (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                price DECIMAL(10, 2) NOT NULL,
+                max_users INT NOT NULL,
+                active BOOLEAN DEFAULT TRUE
+            )
+        `);
+
+        // Inserir planos padrão se não existirem
+        const [plans] = await connection.query("SELECT * FROM saas_plans");
+        if (plans.length === 0) {
+            await connection.query(`
+                INSERT INTO saas_plans (name, price, max_users) VALUES 
+                ('Básico', 99.90, 3),
+                ('Profissional', 199.90, 10),
+                ('Enterprise', 499.90, 999)
+            `);
+        }
+
+        // 2. Tabela de Empresas (Tenants)
         await connection.query(`
             CREATE TABLE IF NOT EXISTS companies (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 cnpj VARCHAR(20),
+                email_contact VARCHAR(255),
+                plan_id INT,
+                status ENUM('active', 'inactive', 'suspended') DEFAULT 'active',
+                expiration_date DATE,
                 ixc_domain VARCHAR(255),
                 ixc_token VARCHAR(255),
                 active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (plan_id) REFERENCES saas_plans(id)
             )
         `);
 
-        // 2. Tabela de Usuários
+        // 3. Tabela de Usuários
         await connection.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -64,7 +91,7 @@ async function initDatabase() {
             )
         `);
 
-        // 3. Tabela de Regras de Pontuação
+        // 4. Tabela de Regras de Pontuação
         await connection.query(`
             CREATE TABLE IF NOT EXISTS score_rules (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -77,7 +104,7 @@ async function initDatabase() {
             )
         `);
 
-        // 4. Inserir Usuário SaaS Owner Padrão (Se não existir)
+        // 5. Inserir Usuário SaaS Owner Padrão (Se não existir)
         const [users] = await connection.query("SELECT * FROM users WHERE email = ?", ['unity@unityautomacoes.com.br']);
         
         if (users.length === 0) {
@@ -107,7 +134,7 @@ initDatabase();
 
 // --- ROTAS DA API ---
 
-// 1. Login
+// Login
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -115,14 +142,17 @@ app.post('/api/login', async (req, res) => {
         
         if (rows.length > 0) {
             const user = rows[0];
-            // Se tiver company_id, busca dados da empresa
             let companyData = null;
             if (user.company_id) {
                 const [companies] = await pool.query('SELECT * FROM companies WHERE id = ?', [user.company_id]);
                 companyData = companies[0];
+                
+                // Verificar status da empresa
+                if (companyData && companyData.status !== 'active') {
+                     return res.status(403).json({ success: false, message: 'Empresa suspensa ou inativa. Contate o suporte.' });
+                }
             }
 
-            // Converter permissions de JSON string para Objeto se necessário
             let perms = user.permissions;
             if (typeof perms === 'string') {
                 try { perms = JSON.parse(perms); } catch(e) {}
@@ -149,24 +179,115 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 2. Obter Regras de Pontuação
-app.get('/api/score-rules', async (req, res) => {
-    // Em um cenário real, pegaríamos o ID da empresa do token JWT.
-    // Aqui vamos pegar via query param para simplificar ou assumir null para saas_owner
-    const companyId = req.query.companyId || null; 
+// --- API SAAS (SUPER ADMIN) ---
+
+// Listar Planos
+app.get('/api/saas/plans', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM saas_plans');
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Listar Empresas
+app.get('/api/saas/companies', async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT c.*, p.name as plan_name 
+            FROM companies c 
+            LEFT JOIN saas_plans p ON c.plan_id = p.id
+            ORDER BY c.created_at DESC
+        `);
+        // Converter active (0/1) para boolean se necessário, mas o front lida bem
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Criar Empresa (Com Usuário Admin Inicial)
+app.post('/api/saas/companies', async (req, res) => {
+    const { name, cnpj, emailContact, planId, adminName, adminEmail, adminPassword } = req.body;
     
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // 1. Criar Empresa
+        const [companyResult] = await connection.query(`
+            INSERT INTO companies (name, cnpj, email_contact, plan_id, status, expiration_date)
+            VALUES (?, ?, ?, ?, 'active', DATE_ADD(NOW(), INTERVAL 30 DAY))
+        `, [name, cnpj, emailContact, planId]);
+        
+        const companyId = companyResult.insertId;
+
+        // 2. Criar Usuário Admin da Empresa
+        await connection.query(`
+            INSERT INTO users (company_id, name, email, password, role, active, permissions)
+            VALUES (?, ?, ?, ?, 'super_admin', 1, ?)
+        `, [
+            companyId, 
+            adminName, 
+            adminEmail, 
+            adminPassword,
+            JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })
+        ]);
+
+        await connection.commit();
+        res.json({ success: true, companyId });
+    } catch (error) {
+        await connection.rollback();
+        console.error(error);
+        res.status(500).json({ error: 'Erro ao criar empresa. Verifique se o email já existe.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// Atualizar Empresa
+app.put('/api/saas/companies/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, cnpj, emailContact, planId } = req.body;
+
+    try {
+        await pool.query(`
+            UPDATE companies 
+            SET name = ?, cnpj = ?, email_contact = ?, plan_id = ?
+            WHERE id = ?
+        `, [name, cnpj, emailContact, planId, id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Alternar Status da Empresa
+app.patch('/api/saas/companies/:id/status', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body; // active, inactive, suspended
+
+    try {
+        await pool.query('UPDATE companies SET status = ? WHERE id = ?', [status, id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- API TENANT ---
+
+app.get('/api/score-rules', async (req, res) => {
+    const companyId = req.query.companyId;
     try {
         let query = 'SELECT * FROM score_rules';
         let params = [];
-        
         if (companyId) {
             query += ' WHERE company_id = ?';
             params.push(companyId);
         }
-
         const [rows] = await pool.query(query, params);
-        
-        // Formatar para o formato esperado pelo frontend (Record<string, ScoreRule>)
         const rulesMap = {};
         rows.forEach(row => {
             rulesMap[row.subject_id] = {
@@ -175,31 +296,23 @@ app.get('/api/score-rules', async (req, res) => {
                 type: row.type
             };
         });
-
         res.json(rulesMap);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// 3. Salvar Regra de Pontuação
 app.post('/api/score-rules', async (req, res) => {
     const { companyId, subjectId, points, type } = req.body;
-    
-    // Se não tiver companyId (ex: saas owner testando), vamos ignorar ou usar 0
-    // Em produção, isso deve ser obrigatório para tenants.
     const cid = companyId || 0; 
-
     try {
         await pool.query(`
             INSERT INTO score_rules (company_id, subject_id, points, type)
             VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE points = VALUES(points), type = VALUES(type)
         `, [cid, subjectId, points, type]);
-        
         res.json({ success: true });
     } catch (error) {
-        console.error(error);
         res.status(500).json({ error: error.message });
     }
 });
