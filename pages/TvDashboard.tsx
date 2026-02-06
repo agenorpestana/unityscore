@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, BarChart3, Calendar } from 'lucide-react';
+import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
@@ -9,9 +9,9 @@ interface RankingItem {
   avatarLetter: string;
 }
 
-interface EvolutionItem {
-    name: string;
-    weeks: number[]; // Contagem das ultimas 4 semanas
+interface HourlyItem {
+    hour: number;
+    count: number;
 }
 
 export const TvDashboard: React.FC = () => {
@@ -23,7 +23,7 @@ export const TvDashboard: React.FC = () => {
   const [topMonth, setTopMonth] = useState<RankingItem[]>([]);
   const [topQuarter, setTopQuarter] = useState<RankingItem[]>([]);
   const [topOsMonth, setTopOsMonth] = useState<RankingItem[]>([]);
-  const [evolutionData, setEvolutionData] = useState<EvolutionItem[]>([]);
+  const [hourlyData, setHourlyData] = useState<HourlyItem[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
@@ -76,7 +76,7 @@ export const TvDashboard: React.FC = () => {
     setScoreRules(rules);
 
     try {
-        // 2. Get ALL Active Employees (Removido filtro de setor)
+        // 2. Get ALL Active Employees
         const empRes = await safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
              method: 'POST', headers: config.headers,
              body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' })
@@ -84,7 +84,6 @@ export const TvDashboard: React.FC = () => {
 
         const techEmployees = new Map<string, string>(); // ID -> Name
         (empRes.registros || []).forEach((e: any) => {
-             // Adiciona todos os funcionários ativos, independente do setor
              techEmployees.set(String(e.id), e.funcionario || e.nome);
         });
 
@@ -124,11 +123,13 @@ export const TvDashboard: React.FC = () => {
         // Process Data
         const statsMonth: Record<string, { pts: number, count: number, name: string }> = {};
         const statsQuarter: Record<string, { pts: number, count: number, name: string }> = {};
-        const weeklyEvolution: Record<string, number[]> = {}; // TechID -> [Week1, Week2, Week3, Week4]
+        
+        // Hourly Distribution (0-23h)
+        const hourlyCounts = new Array(24).fill(0);
+        let maxHourlyCount = 0;
 
         allOrders.forEach((reg: any) => {
             const techId = String(reg.id_tecnico);
-            // Verifica se o técnico existe na lista de funcionários ativos
             if (!techEmployees.has(techId)) return;
 
             const techName = techEmployees.get(techId)!;
@@ -158,11 +159,11 @@ export const TvDashboard: React.FC = () => {
                 statsMonth[techId].pts += points;
                 statsMonth[techId].count += 1;
 
-                // Evolution (Simplified to 4 weeks relative to start of month)
-                if (!weeklyEvolution[techId]) weeklyEvolution[techId] = [0, 0, 0, 0, 0];
-                const day = closeDate.getDate();
-                const weekIndex = Math.min(Math.floor((day - 1) / 7), 4);
-                weeklyEvolution[techId][weekIndex]++;
+                // Hourly Stats (Mês Atual)
+                const hour = closeDate.getHours();
+                if (hour >= 0 && hour <= 23) {
+                    hourlyCounts[hour]++;
+                }
             }
         });
 
@@ -189,16 +190,12 @@ export const TvDashboard: React.FC = () => {
             .map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) }));
         setTopOsMonth(rankOs);
 
-        // 4. Evolution Data (Top 5 Techs by Volume)
-        const top5VolTechIds = Object.keys(statsMonth)
-            .sort((a, b) => statsMonth[b].count - statsMonth[a].count)
-            .slice(0, 5);
+        // 4. Hourly Data (Filter 08h - 19h for display relevance)
+        const relevantHours = hourlyCounts
+            .map((count, hour) => ({ hour, count }))
+            .filter(item => item.hour >= 8 && item.hour <= 19);
         
-        const evoData = top5VolTechIds.map(id => ({
-            name: statsMonth[id].name.split(' ')[0], // First name
-            weeks: weeklyEvolution[id]
-        }));
-        setEvolutionData(evoData);
+        setHourlyData(relevantHours);
 
         setLastUpdated(new Date().toLocaleTimeString('pt-BR'));
 
@@ -223,6 +220,9 @@ export const TvDashboard: React.FC = () => {
           </div>
       );
   }
+
+  // Calculate max for bar scaling
+  const maxHourlyVal = Math.max(...hourlyData.map(h => h.count), 1);
 
   return (
     <div className="min-h-screen bg-slate-900 text-white p-6 overflow-hidden font-sans">
@@ -302,29 +302,42 @@ export const TvDashboard: React.FC = () => {
           {/* Right Column: Analytics */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
               
-              {/* Evolution Chart (Simplified Bars) */}
+              {/* Hourly Evolution Chart (Replaces Weekly) */}
               <div className="bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-6 h-1/2 flex flex-col">
-                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-emerald-400 uppercase tracking-wider"><TrendingUp size={20} /> Evolução de OS (Top 5 - Semana a Semana)</h2>
-                  <div className="flex-1 flex items-end justify-between gap-4 px-4 pb-2 border-b border-slate-700">
-                      {evolutionData.map((tech, i) => (
-                          <div key={i} className="flex-1 flex flex-col items-center gap-2 group">
-                              <div className="w-full flex items-end justify-center gap-1 h-32">
-                                  {tech.weeks.map((val, wIdx) => {
-                                      const height = Math.min(val * 4, 100); // Scale
-                                      return (
-                                        <div key={wIdx} className="w-full bg-emerald-500/20 rounded-t relative group-hover:bg-emerald-500/40 transition-all" style={{height: `${Math.max(height, 5)}%`}}>
-                                            <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs font-bold text-emerald-300 opacity-0 group-hover:opacity-100">{val}</div>
-                                        </div>
-                                      )
-                                  })}
-                              </div>
-                              <p className="text-xs font-bold text-slate-400 truncate w-full text-center">{tech.name}</p>
-                          </div>
-                      ))}
-                      {evolutionData.length === 0 && <div className="w-full h-full flex items-center justify-center text-slate-600">Gráfico indisponível (poucos dados)</div>}
+                  <div className="flex justify-between items-start mb-4">
+                    <h2 className="text-lg font-bold flex items-center gap-2 text-emerald-400 uppercase tracking-wider">
+                        <Clock size={20} /> Volume de Fechamentos por Hora
+                    </h2>
+                    <span className="text-xs text-slate-500 border border-slate-700 px-2 py-1 rounded bg-slate-900">Mês Atual</span>
                   </div>
-                  <div className="flex justify-between text-[10px] text-slate-500 px-4 mt-2">
-                       <span>Semana 1</span><span>Semana 2</span><span>Semana 3</span><span>Semana 4+</span>
+                  
+                  <div className="flex-1 flex items-end justify-between gap-2 px-2 pb-2 border-b border-slate-700">
+                      {hourlyData.map((item, i) => {
+                          const height = Math.max((item.count / maxHourlyVal) * 100, 5); // Min 5% height
+                          const isPeak = item.count === maxHourlyVal && maxHourlyVal > 0;
+                          return (
+                            <div key={i} className="flex-1 flex flex-col items-center gap-2 group relative">
+                                <div 
+                                    className={`w-full rounded-t transition-all duration-500 relative
+                                        ${isPeak ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]' : 'bg-emerald-500/20 hover:bg-emerald-500/40'}
+                                    `} 
+                                    style={{height: `${height}%`}}
+                                >
+                                    <div className={`absolute -top-6 left-1/2 -translate-x-1/2 text-sm font-bold ${isPeak ? 'text-emerald-300' : 'text-slate-400'}`}>
+                                        {item.count}
+                                    </div>
+                                </div>
+                                <p className={`text-xs font-bold truncate w-full text-center ${isPeak ? 'text-white' : 'text-slate-500'}`}>
+                                    {item.hour}h
+                                </p>
+                            </div>
+                          );
+                      })}
+                      {hourlyData.length === 0 && (
+                          <div className="w-full h-full flex items-center justify-center text-slate-600">
+                              Sem dados de horário para exibir.
+                          </div>
+                      )}
                   </div>
               </div>
 
