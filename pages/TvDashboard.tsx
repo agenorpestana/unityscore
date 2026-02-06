@@ -71,8 +71,9 @@ export const TvDashboard: React.FC = () => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = rules[order.subjectId]?.points || 0;
     if (order.reopeningDate && order.reopeningDate !== '-') {
-        const d1 = new Date(order.closingDate);
-        const d2 = new Date(order.reopeningDate);
+        // Cálculo simples de dias para evitar timezone no Date object
+        const d1 = new Date(order.closingDate.split(' ')[0]);
+        const d2 = new Date(order.reopeningDate.split(' ')[0]);
         const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
         if (diffDays <= 30) points = -Math.abs(points);
     }
@@ -111,13 +112,22 @@ export const TvDashboard: React.FC = () => {
         });
 
         // 3. Fetch OS Data (Last 3 Months to cover Rankings)
-        const today = new Date();
+        const now = new Date();
         const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(today.getMonth() - 3);
+        threeMonthsAgo.setMonth(now.getMonth() - 3);
         threeMonthsAgo.setDate(1); 
         
-        const firstDayCurrentMonth = new Date(today.getFullYear(), today.getMonth(), 1);
         const dateStr = threeMonthsAgo.toISOString().split('T')[0];
+
+        // Prepare Date Strings for precise Comparison (No Timezone issues)
+        const currentYear = now.getFullYear();
+        const currentMonthStr = String(now.getMonth() + 1).padStart(2, '0');
+        const currentDayStr = String(now.getDate()).padStart(2, '0');
+        const currentHour = now.getHours();
+
+        // Prefixes for string matching (YYYY-MM and YYYY-MM-DD)
+        const monthPrefix = `${currentYear}-${currentMonthStr}`; // ex: "2024-05"
+        const todayPrefix = `${currentYear}-${currentMonthStr}-${currentDayStr}`; // ex: "2024-05-20"
 
         // Fetch paginated
         let allOrders: any[] = [];
@@ -151,58 +161,62 @@ export const TvDashboard: React.FC = () => {
         const hourlyStatsToday: Record<string, number[]> = {};
         const totalTodayPerTech: Record<string, number> = {};
 
-        const todayDateStr = today.toLocaleDateString('pt-BR');
-        const currentHour = today.getHours();
-
         allOrders.forEach((reg: any) => {
             const techId = String(reg.id_tecnico);
             if (!techEmployees.has(techId)) return;
 
             const techName = techEmployees.get(techId)!;
-            const closeDate = new Date(reg.data_fechamento);
             
+            // Importante: Tratamento de String direto para evitar problema de Timezone
+            const closingDateStr = reg.data_fechamento; // "YYYY-MM-DD HH:mm:ss"
+            if (!closingDateStr) return;
+
             // Normalize Object
             const orderObj: ServiceOrder = {
                 id: reg.id,
                 technicianId: techId,
                 technicianName: techName,
                 clientId: '', clientName: '', subjectId: reg.id_assunto, subjectName: '',
-                openingDate: reg.data_abertura, closingDate: reg.data_fechamento, 
+                openingDate: reg.data_abertura, closingDate: closingDateStr, 
                 reopeningDate: (reg.data_final && reg.data_fechamento && reg.data_final !== reg.data_fechamento) ? reg.data_final : '-',
                 status: 'Fechado'
             };
 
             const points = getPoints(orderObj, rules);
 
-            // Quarter Stats
+            // Quarter Stats (Simplificado: Acumula tudo que veio na query "Last 3 months")
             if (!statsQuarter[techId]) statsQuarter[techId] = { pts: 0, count: 0, name: techName };
             statsQuarter[techId].pts += points;
             statsQuarter[techId].count += 1;
 
-            // Current Month Stats
-            if (closeDate >= firstDayCurrentMonth) {
+            // Current Month Stats (String Comparison)
+            if (closingDateStr.startsWith(monthPrefix)) {
                 if (!statsMonth[techId]) statsMonth[techId] = { pts: 0, count: 0, name: techName };
                 statsMonth[techId].pts += points;
                 statsMonth[techId].count += 1;
             }
 
-            // HOURLY STATS (TODAY ONLY)
-            if (closeDate.toLocaleDateString('pt-BR') === todayDateStr) {
-                const hour = closeDate.getHours();
+            // HOURLY STATS (TODAY ONLY) - String Comparison
+            if (closingDateStr.startsWith(todayPrefix)) {
+                // Parse Hour from String "YYYY-MM-DD HH:mm:ss"
+                // Split by space -> get time part -> split by colon -> get hour
+                const timePart = closingDateStr.split(' ')[1]; // "HH:mm:ss"
+                const hourStr = timePart ? timePart.split(':')[0] : null;
                 
-                if (!hourlyStatsToday[techId]) {
-                    hourlyStatsToday[techId] = new Array(12).fill(0); // 08h-19h
-                    totalTodayPerTech[techId] = 0;
-                }
+                if (hourStr) {
+                    const hour = parseInt(hourStr, 10);
+                    
+                    if (!hourlyStatsToday[techId]) {
+                        hourlyStatsToday[techId] = new Array(12).fill(0); // 08h-19h
+                        totalTodayPerTech[techId] = 0;
+                    }
 
-                totalTodayPerTech[techId]++;
+                    totalTodayPerTech[techId]++;
 
-                if (hour >= 8 && hour <= 19) {
-                    const idx = hour - 8;
-                    // Acumulativo ou Absoluto? Para linha de evolução diária, geralmente é absoluto por hora
-                    // Mas se o usuário quer ver o "total subindo", seria acumulativo.
-                    // Vamos manter absoluto por hora (picos de produtividade) que é mais comum em dashboards de callcenter/isp
-                    hourlyStatsToday[techId][idx]++;
+                    if (hour >= 8 && hour <= 19) {
+                        const idx = hour - 8;
+                        hourlyStatsToday[techId][idx]++;
+                    }
                 }
             }
         });
