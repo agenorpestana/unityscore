@@ -28,10 +28,11 @@ app.use(express.json());
 // Servir arquivos estáticos do React
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// --- INICIALIZAÇÃO DO BANCO DE DADOS ---
+// --- INICIALIZAÇÃO E MIGRAÇÃO DO BANCO DE DADOS ---
 async function initDatabase() {
+    let connection;
     try {
-        const connection = await pool.getConnection();
+        connection = await pool.getConnection();
         
         console.log('🔧 Verificando estrutura do banco de dados...');
 
@@ -74,6 +75,23 @@ async function initDatabase() {
                 FOREIGN KEY (plan_id) REFERENCES saas_plans(id)
             )
         `);
+
+        // --- MIGRATIONS: Garantir que colunas novas existam em tabelas antigas ---
+        const addColumnSafe = async (table, columnDef) => {
+            try {
+                await connection.query(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+                console.log(`Column added to ${table}: ${columnDef}`);
+            } catch (e) {
+                // Ignora erro de coluna duplicada (code 1060)
+                if (e.errno !== 1060) console.log(`Note on ${table}: ${e.message}`);
+            }
+        };
+
+        await addColumnSafe('companies', 'plan_id INT');
+        await addColumnSafe('companies', 'email_contact VARCHAR(255)');
+        await addColumnSafe('companies', 'status ENUM(\'active\', \'inactive\', \'suspended\') DEFAULT \'active\'');
+        await addColumnSafe('companies', 'expiration_date DATE');
+        // --- FIM MIGRATIONS ---
 
         // 3. Tabela de Usuários
         await connection.query(`
@@ -122,10 +140,11 @@ async function initDatabase() {
             ]);
         }
 
-        connection.release();
-        console.log('✅ Banco de dados inicializado com sucesso!');
+        console.log('✅ Banco de dados inicializado/atualizado com sucesso!');
     } catch (error) {
         console.error('❌ Erro na inicialização do banco:', error);
+    } finally {
+        if (connection) connection.release();
     }
 }
 
@@ -175,7 +194,7 @@ app.post('/api/login', async (req, res) => {
         }
     } catch (error) {
         console.error(error);
-        res.status(500).json({ success: false, message: 'Erro no servidor' });
+        res.status(500).json({ success: false, message: 'Erro no servidor: ' + error.message });
     }
 });
 
@@ -200,7 +219,6 @@ app.get('/api/saas/companies', async (req, res) => {
             LEFT JOIN saas_plans p ON c.plan_id = p.id
             ORDER BY c.created_at DESC
         `);
-        // Converter active (0/1) para boolean se necessário, mas o front lida bem
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -211,6 +229,11 @@ app.get('/api/saas/companies', async (req, res) => {
 app.post('/api/saas/companies', async (req, res) => {
     const { name, cnpj, emailContact, planId, adminName, adminEmail, adminPassword } = req.body;
     
+    // Validação Básica
+    if (!name || !planId || !adminEmail || !adminPassword) {
+        return res.status(400).json({ error: 'Campos obrigatórios faltando.' });
+    }
+
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -219,7 +242,7 @@ app.post('/api/saas/companies', async (req, res) => {
         const [companyResult] = await connection.query(`
             INSERT INTO companies (name, cnpj, email_contact, plan_id, status, expiration_date)
             VALUES (?, ?, ?, ?, 'active', DATE_ADD(NOW(), INTERVAL 30 DAY))
-        `, [name, cnpj, emailContact, planId]);
+        `, [name, cnpj, emailContact, parseInt(planId)]); // parseInt garante número
         
         const companyId = companyResult.insertId;
 
@@ -239,8 +262,14 @@ app.post('/api/saas/companies', async (req, res) => {
         res.json({ success: true, companyId });
     } catch (error) {
         await connection.rollback();
-        console.error(error);
-        res.status(500).json({ error: 'Erro ao criar empresa. Verifique se o email já existe.' });
+        console.error("Erro no cadastro de empresa:", error);
+        
+        // Retornar mensagem específica do MySQL se possível
+        const msg = error.code === 'ER_DUP_ENTRY' 
+            ? 'Este email já está cadastrado no sistema.' 
+            : (error.message || 'Erro interno ao criar empresa.');
+            
+        res.status(500).json({ error: msg });
     } finally {
         connection.release();
     }
@@ -256,7 +285,7 @@ app.put('/api/saas/companies/:id', async (req, res) => {
             UPDATE companies 
             SET name = ?, cnpj = ?, email_contact = ?, plan_id = ?
             WHERE id = ?
-        `, [name, cnpj, emailContact, planId, id]);
+        `, [name, cnpj, emailContact, parseInt(planId), id]);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });

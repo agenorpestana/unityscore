@@ -80,7 +80,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogo
             setCompanies(normalizedCompanies);
         }
     } catch (e: any) {
-        setError("Erro ao carregar dados do servidor.");
+        setError("Erro ao carregar dados do servidor: " + e.message);
     } finally {
         setIsLoading(false);
     }
@@ -100,9 +100,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogo
         });
         if (res.ok) {
             fetchData(); // Recarrega a lista
+        } else {
+             alert("Erro ao alterar status. Verifique o console.");
         }
     } catch (e) {
-        alert("Erro ao alterar status");
+        alert("Erro de conexão.");
     }
   };
 
@@ -149,22 +151,26 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogo
               method = 'PUT';
           }
 
+          console.log("Enviando dados:", formData); // Debug
+
           const res = await fetch(url, {
               method: method,
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(formData)
           });
 
+          const data = await res.json();
+
           if (!res.ok) {
-              const errData = await res.json();
-              throw new Error(errData.error || 'Erro ao salvar empresa');
+              throw new Error(data.error || 'Erro ao salvar empresa');
           }
 
           setIsCompanyModalOpen(false);
           fetchData(); // Recarrega lista atualizada
           
       } catch (e: any) {
-          alert(e.message);
+          alert(`Erro: ${e.message}`);
+          console.error(e);
       } finally {
           setIsLoading(false);
       }
