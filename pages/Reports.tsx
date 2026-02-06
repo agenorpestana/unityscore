@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Calendar, Filter, FileText, Loader2, AlertTriangle, Printer, Download } from 'lucide-react';
 import { Technician, Company, ServiceOrder, ScoreRule } from '../types';
 
@@ -47,10 +47,7 @@ export const Reports: React.FC = () => {
 
   const [technicians, setTechnicians] = useState<(Technician & { role?: string })[]>([]);
   const [employeesMap, setEmployeesMap] = useState<Map<string, EmpInfo>>(new Map());
-  
-  // MAPA DE SETORES
   const [sectorsMap, setSectorsMap] = useState<Map<string, string>>(new Map());
-
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [clientCache, setClientCache] = useState<Record<string, string>>({});
@@ -59,6 +56,9 @@ export const Reports: React.FC = () => {
   const [loadingProgress, setLoadingProgress] = useState<string>(''); 
   const [error, setError] = useState<string | null>(null);
   const [availableFunctions, setAvailableFunctions] = useState<string[]>([]);
+  
+  // Controle de cancelamento de requisições
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const formatDateBR = (dateString: string | undefined | null) => {
     if (!dateString || dateString === '0000-00-00 00:00:00' || dateString === '-') return '-';
@@ -70,7 +70,6 @@ export const Reports: React.FC = () => {
     } catch (e) { return dateString; }
   };
 
-  // --- API PROXY CONFIG ---
   const getApiConfig = useCallback(() => {
     const savedCompany = localStorage.getItem('unity_company_data');
     if (!savedCompany) return null;
@@ -100,7 +99,12 @@ export const Reports: React.FC = () => {
       }
       try { return JSON.parse(text); } 
       catch (e) { if (text.trim().startsWith('<')) throw new Error('API retornou HTML. Verifique Proxy.'); throw new Error('JSON inválido.'); }
-    } catch (err: any) { throw err; }
+    } catch (err: any) { 
+        if (err.name === 'AbortError') {
+            throw new Error('Busca cancelada.');
+        }
+        throw err; 
+    }
   };
 
   useEffect(() => {
@@ -157,19 +161,14 @@ export const Reports: React.FC = () => {
   const getPoints = (order: ServiceOrder) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
-
-    // Regra de Penalidade por Reabertura (Se reaberto dentro de 30 dias, pontos ficam negativos)
     if (order.reopeningDate && order.reopeningDate !== '-') {
-        const dateOriginal = new Date(order.closingDate); // Data 'final' original (mais antiga)
-        const dateReopening = new Date(order.reopeningDate); // Data de fechamento real (reabertura)
-        
+        const dateOriginal = new Date(order.closingDate); 
+        const dateReopening = new Date(order.reopeningDate); 
         if (!isNaN(dateOriginal.getTime()) && !isNaN(dateReopening.getTime())) {
             const diffTime = Math.abs(dateReopening.getTime() - dateOriginal.getTime());
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            
-            // Se a diferença for menor ou igual a 30 dias
             if (diffDays <= 30) {
-                points = -Math.abs(points); // Garante que seja negativo
+                points = -Math.abs(points); 
             }
         }
     }
@@ -181,36 +180,55 @@ export const Reports: React.FC = () => {
   };
 
   const handleGenerate = async () => {
+    // 1. Cancelar requisições anteriores
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+    }
+    // 2. Criar novo controlador
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const config = getApiConfig();
     if (!config) { setError('Configure a API.'); return; }
-    setIsLoading(true); setLoadingProgress('Iniciando busca...'); setReportData(null); setError(null);
+    
+    setIsLoading(true); 
+    setLoadingProgress('Iniciando busca...'); 
+    setReportData(null); 
+    setError(null);
 
     try {
       let allRegistros: any[] = [];
       let page = 1;
       let keepFetching = true;
-      const BATCH_SIZE = 500;
-      const MAX_TOTAL_RECORDS = 5000; // Limite expandido solicitado
+      
+      // 3. Batch Size reduzido para evitar timeouts e bloqueios
+      const BATCH_SIZE = 250;
+      const MAX_TOTAL_RECORDS = 5000; 
       
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
       const endDateLimit = `${filters.endDate} 23:59:59`;
 
       while (keepFetching) {
+        if (controller.signal.aborted) break;
+
         setLoadingProgress(`Buscando dados (${allRegistros.length} registros)...`);
         
-        // Busca NORMAL (ASCendente) a partir da data de início
+        // 4. Delay (Throttle) para não afogar a API/Navegador
+        await new Promise(r => setTimeout(r, 300));
+
         const osData = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
           method: 'POST', 
           headers: config.headers, 
           body: JSON.stringify({ 
               qtype: dateField, 
               query: filters.startDate, 
-              oper: '>=', // Maior ou igual à data de início
+              oper: '>=', 
               page: page.toString(), 
               rp: BATCH_SIZE.toString(), 
               sortname: dateField, 
-              sortorder: 'asc' // Ordem normal
-          })
+              sortorder: 'asc'
+          }),
+          signal: controller.signal // Passar sinal de cancelamento
         });
 
         const batch = osData.registros || [];
@@ -220,17 +238,15 @@ export const Reports: React.FC = () => {
             break; 
         }
 
-        // Verifica se já passamos da data final
+        // Verifica range
         for (const reg of batch) {
            const dateToCheck = filters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
            
            if (dateToCheck && dateToCheck > endDateLimit) {
-               // Passou da data final, pode parar
                keepFetching = false;
                break; 
            }
 
-           // Se estiver dentro do range, adiciona
            if (dateToCheck && dateToCheck >= filters.startDate && dateToCheck <= endDateLimit) {
                allRegistros.push(reg);
            }
@@ -243,13 +259,16 @@ export const Reports: React.FC = () => {
         if (batch.length < BATCH_SIZE) { keepFetching = false; } 
         else if (keepFetching) { page++; }
         
-        // Limite de segurança de requisições
-        if (page > 50) keepFetching = false;
+        // Safety Break
+        if (page > 100) keepFetching = false;
       }
 
+      if (controller.signal.aborted) return;
       if (allRegistros.length === 0) { setReportData([]); setIsLoading(false); return; }
+      
       setLoadingProgress('Processando dados...');
 
+      // Mapeamento em memória
       let orders: (ServiceOrder & { technicianGroup?: string })[] = allRegistros.map((reg: any) => {
           const techId = String(reg.id_tecnico); 
           let techName = `Técnico #${techId}`;
@@ -324,69 +343,55 @@ export const Reports: React.FC = () => {
 
       setReportData(result);
       
-      if (filters.type === 'ANALYTICAL' && clientIdsToResolve.size > 0) {
+      // Busca assíncrona de clientes (só se não cancelado)
+      if (filters.type === 'ANALYTICAL' && clientIdsToResolve.size > 0 && !controller.signal.aborted) {
         const idsNeeded = Array.from(clientIdsToResolve).filter(id => !clientCache[id]);
         if (idsNeeded.length > 0) {
            setLoadingProgress('Buscando nomes de clientes...');
-           await resolveClients(idsNeeded);
+           await resolveClients(idsNeeded, controller.signal);
         }
       }
     } catch (e: any) {
-      console.error(e);
-      setError(`Erro ao gerar relatório: ${e.message}`);
-    } finally { setIsLoading(false); setLoadingProgress(''); }
+      if (e.message !== 'Busca cancelada.') {
+          console.error(e);
+          setError(`Erro ao gerar relatório: ${e.message}`);
+      }
+    } finally { 
+        if (abortControllerRef.current === controller) {
+            setIsLoading(false); 
+            setLoadingProgress(''); 
+        }
+    }
   };
 
-  const resolveClients = async (ids: string[]) => {
+  const resolveClients = async (ids: string[], signal: AbortSignal) => {
     const config = getApiConfig();
     if (!config) return;
     const url = buildUrl(config, '/webservice/v1/cliente');
     
-    // Aumentado batch size para resolver nomes mais rápido
     const batchSize = 10;
     
     for (let i = 0; i < ids.length; i += batchSize) {
+      if (signal.aborted) return;
       const batch = ids.slice(i, i + batchSize);
       const newResolved: Record<string, string> = {};
 
       await Promise.all(batch.map(async (id) => {
-        let attempts = 0;
-        let success = false;
-        
-        while (attempts < 2 && !success) { // Reduzido tentativas para não travar
-            try {
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 10000);
-
+        try {
               const res = await safeFetch(url, { 
                 method: 'POST', 
                 headers: config.headers, 
-                body: JSON.stringify({ 
-                  qtype: 'cliente.id', 
-                  query: id, 
-                  oper: '=', 
-                  rp: '1' 
-                }),
-                signal: controller.signal
-              }).finally(() => clearTimeout(timeoutId));
+                body: JSON.stringify({ qtype: 'cliente.id', query: id, oper: '=', rp: '1' }),
+                signal: signal
+              });
               
               if (res.registros && res.registros.length > 0) {
                 const client = res.registros[0];
                 newResolved[id] = client.fantasia || client.razao || client.nome_social || client.nome || `Cliente #${id}`;
-                success = true;
               } else {
                 newResolved[id] = `Cliente #${id}`; 
-                success = true; 
               }
-            } catch (e) { 
-               attempts++;
-               if (attempts >= 2) {
-                   newResolved[id] = `Cliente #${id}`; 
-               } else {
-                   await new Promise(r => setTimeout(r, 500 * attempts));
-               }
-            }
-        }
+        } catch (e) { newResolved[id] = `Cliente #${id}`; }
       }));
 
       setClientCache(prev => ({ ...prev, ...newResolved }));

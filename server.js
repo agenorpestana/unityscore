@@ -156,7 +156,11 @@ app.use('/api/ixc-proxy', async (req, res) => {
         const targetUrl = `${baseUrl}${req.url}`;
         const tokenBase64 = Buffer.from(ixc_token.trim()).toString('base64');
 
-        // 2. Fazer requisição ao IXC (Backend-to-Backend não tem CORS)
+        // 2. Fazer requisição ao IXC com Timeout
+        // Usa AbortController para timeout (suportado em Node 18+ e fetch moderno)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout
+
         const response = await fetch(targetUrl, {
             method: 'POST', // IXC geralmente usa POST para listar
             headers: {
@@ -164,8 +168,9 @@ app.use('/api/ixc-proxy', async (req, res) => {
                 'Content-Type': 'application/json',
                 'ixcsoft': 'listar'
             },
-            body: JSON.stringify(req.body)
-        });
+            body: JSON.stringify(req.body),
+            signal: controller.signal
+        }).finally(() => clearTimeout(timeoutId));
 
         // 3. Devolver resposta ao frontend
         const data = await response.text();
@@ -178,6 +183,10 @@ app.use('/api/ixc-proxy', async (req, res) => {
         }
 
     } catch (error) {
+        if (error.name === 'AbortError') {
+             console.error('Proxy Timeout');
+             return res.status(504).json({ error: 'Timeout: IXC demorou muito para responder.' });
+        }
         console.error('Proxy Error:', error);
         res.status(500).json({ error: 'Erro de comunicação com o IXC: ' + error.message });
     }
