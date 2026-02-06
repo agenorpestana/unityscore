@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Users, Settings, LogOut, Network, Trophy, FileText } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut, Network, Trophy, FileText, MonitorPlay } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -16,6 +16,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
     { id: 'users', label: 'Usuários', icon: Users },
     { id: 'settings', label: 'Configurações', icon: Settings },
   ];
+
+  const openTvMode = () => {
+    window.open('?mode=tv', '_blank');
+  };
 
   return (
     <div className="h-screen w-64 bg-slate-900 text-white flex flex-col fixed left-0 top-0 shadow-xl z-20 transition-all duration-300">
@@ -48,6 +52,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
             </button>
           );
         })}
+
+        <div className="pt-4 mt-4 border-t border-slate-800">
+           <button
+              onClick={openTvMode}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-emerald-400 hover:bg-emerald-900/20 transition-colors duration-200"
+            >
+              <MonitorPlay size={20} />
+              <span className="font-medium">Modo TV / Público</span>
+            </button>
+        </div>
       </nav>
 
       <div className="p-4 border-t border-slate-700 bg-slate-900">

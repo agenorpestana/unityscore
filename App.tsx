@@ -6,6 +6,7 @@ import { UserManagement } from './pages/UserManagement';
 import { ScoreManagement } from './pages/ScoreManagement';
 import { Reports } from './pages/Reports';
 import { SuperAdminDashboard } from './pages/SuperAdminDashboard';
+import { TvDashboard } from './pages/TvDashboard';
 import { AuthState, Company, User } from './types';
 import { 
   RefreshCw, 
@@ -23,6 +24,20 @@ const App: React.FC = () => {
   });
 
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [isTvMode, setIsTvMode] = useState(false);
+
+  // Check for TV Mode in URL on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') === 'tv') {
+        setIsTvMode(true);
+        // Tenta autenticar silenciosamente via localStorage para exibir o dashboard
+        const savedUser = localStorage.getItem('unity_user_session'); // Se você salvar a sessão
+        // Como o auth state reseta no refresh, o TvDashboard deve funcionar independentemente do AuthState
+        // se tiver os dados da empresa no localStorage.
+        // O ideal é ter a empresa configurada.
+    }
+  }, []);
 
   // Dashboard States
   const [dashboardData, setDashboardData] = useState({
@@ -205,12 +220,18 @@ const App: React.FC = () => {
   }, [getApiConfig]);
 
   useEffect(() => {
-    if (auth.isAuthenticated && activeTab === 'dashboard' && auth.user?.role !== 'saas_owner') {
+    if (auth.isAuthenticated && activeTab === 'dashboard' && auth.user?.role !== 'saas_owner' && !isTvMode) {
       fetchDashboardData();
       const interval = setInterval(fetchDashboardData, 60000); // 60s auto refresh
       return () => clearInterval(interval);
     }
-  }, [auth.isAuthenticated, activeTab, fetchDashboardData, auth.user]);
+  }, [auth.isAuthenticated, activeTab, fetchDashboardData, auth.user, isTvMode]);
+
+  // RENDERIZAÇÃO CONDICIONAL TV MODE
+  if (isTvMode) {
+      // O Dashboard TV cuida da própria busca de dados baseado no localStorage
+      return <TvDashboard />;
+  }
 
   if (!auth.isAuthenticated) {
     return <Login onLogin={handleLogin} />;
