@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User } from '../types';
-import { Network, Lock, Mail, ArrowRight, Loader2 } from 'lucide-react';
+import { Network, Lock, Mail, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (user: User) => void;
@@ -12,48 +12,73 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    // Simulate network delay
-    setTimeout(() => {
+    try {
+      // 1. Tentar Login via API (Banco de Dados)
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.user) {
+           onLogin(data.user);
+           return;
+        } else {
+           throw new Error('Credenciais inválidas');
+        }
+      } else if (response.status === 404) {
+         // API não encontrada (talvez rodando só frontend dev)
+         throw new Error('Offline Mode');
+      } else {
+         // Erro 401 ou 500
+         const errText = await response.json();
+         throw new Error(errText.message || 'Erro no login');
+      }
+    } catch (err: any) {
+      console.log("Fallback login local:", err.message);
       
-      // 1. LOGIN DO DONO DO SAAS (SUPER ADMIN GERAL)
-      if (email === 'admin@saas.com' && password === 'admin') {
+      // FALLBACK LOCAL (Caso a API não esteja rodando ou erro de conexão)
+      // Login do Dono do SaaS (Solicitado)
+      if (email === 'unity@unityautomacoes.com.br' && password === '200616') {
          const saasOwnerUser: User = {
             id: '0',
-            name: 'Admin SaaS',
-            email: 'admin@saas.com',
+            name: 'Unity Admin',
+            email: 'unity@unityautomacoes.com.br',
             role: 'saas_owner',
             active: true,
             permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true }
          };
-         onLogin(saasOwnerUser);
+         // Pequeno delay para simular
+         setTimeout(() => {
+             onLogin(saasOwnerUser);
+         }, 500);
          return;
       }
 
-      // 2. LOGIN DO CLIENTE (TENANT)
+      // Login Antigo (Suporte)
       if (email === 'suporte@unityautomacoes.com.br' && password === '200616') {
         const tenantAdminUser: User = {
           id: '1',
           name: 'Suporte Unity',
           email: 'suporte@unityautomacoes.com.br',
-          role: 'super_admin', // Isso aqui é admin DO TENANT
+          role: 'super_admin',
           active: true,
-          permissions: {
-            canManageCompany: true,
-            canManageUsers: true,
-            canViewScore: true
-          }
+          permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true }
         };
-        onLogin(tenantAdminUser);
-      } else {
-        setError('Credenciais inválidas. Tente novamente.');
-        setLoading(false);
+        setTimeout(() => onLogin(tenantAdminUser), 500);
+        return;
       }
-    }, 800);
+
+      setLoading(false);
+      setError('Credenciais inválidas ou erro de conexão.');
+    }
   };
 
   return (
@@ -68,7 +93,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               <Network size={32} className="text-brand-600" />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-wide">Unity Score</h1>
-            <p className="text-brand-100 text-sm mt-1">Gestão de Performance para ISPs</p>
+            <p className="text-brand-100 text-sm mt-1">SaaS de Pontuação para Provedores</p>
           </div>
         </div>
 
@@ -76,7 +101,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         <div className="p-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email Corporativo</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Mail className="h-5 w-5 text-gray-400" />
@@ -86,14 +111,14 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-gray-900 focus:border-brand-500 focus:ring-brand-500 transition-colors"
-                  placeholder="seu@email.com.br"
+                  placeholder="unity@unityautomacoes.com.br"
                   required
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Senha de Acesso</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Senha</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Lock className="h-5 w-5 text-gray-400" />
@@ -110,7 +135,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
             </div>
 
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-600 text-sm p-3 rounded-lg text-center">
+              <div className="bg-red-50 border border-red-200 text-red-600 text-sm p-3 rounded-lg flex items-center gap-2">
+                <AlertCircle size={16} />
                 {error}
               </div>
             )}
@@ -123,21 +149,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               {loading ? (
                 <>
                   <Loader2 className="animate-spin" size={20} />
-                  <span>Acessando...</span>
+                  <span>Autenticando...</span>
                 </>
               ) : (
                 <>
-                  <span>Entrar no Sistema</span>
+                  <span>Acessar Painel</span>
                   <ArrowRight size={20} />
                 </>
               )}
             </button>
-
-            <div className="text-center mt-6">
-              <p className="text-xs text-gray-400">
-                &copy; {new Date().getFullYear()} Unity Automações. Todos os direitos reservados.
-              </p>
-            </div>
           </form>
         </div>
       </div>

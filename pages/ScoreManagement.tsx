@@ -7,7 +7,6 @@ interface EmployeeMapItem {
   name: string;
 }
 
-// Extensão do tipo para incluir detalhes carregados sob demanda
 type DetailedServiceOrder = ServiceOrder & { 
   city?: string; 
   phone?: string; 
@@ -98,6 +97,23 @@ export const ScoreManagement: React.FC = () => {
     } catch (err: any) { throw err; }
   };
 
+  const fetchRulesFromBackend = async () => {
+     try {
+         // Tenta buscar da API (MySQL)
+         const res = await fetch('/api/score-rules');
+         if (res.ok) {
+             const dbRules = await res.json();
+             // Mescla com o local para garantir que regras novas do IXC apareçam
+             return dbRules;
+         }
+     } catch (e) {
+         console.log("Backend offline, usando localStorage");
+     }
+     // Fallback
+     const savedRules = localStorage.getItem('unity_score_rules');
+     return savedRules ? JSON.parse(savedRules) : {};
+  };
+
   const fetchStaffData = async () => {
     const config = getApiConfig();
     if (!config) return;
@@ -146,17 +162,26 @@ export const ScoreManagement: React.FC = () => {
       const data = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_assunto'), {
         method: 'POST', headers: config.headers, body: JSON.stringify({ qtype: 'su_oss_assunto.ativo', query: 'S', oper: '=', rp: '1000', sortname: 'su_oss_assunto.assunto', sortorder: 'asc' })
       });
+      
+      // Carregar regras atuais (DB ou Local)
+      const currentRules = await fetchRulesFromBackend();
+
       if (data.registros) {
         const subs: Subject[] = data.registros.map((reg: any) => ({ id: reg.id, title: reg.assunto }));
         setSubjects(subs);
-        const currentRules = { ...scoreRules };
+        
+        // Sincronizar assuntos do IXC com regras existentes
         let hasChanges = false;
         subs.forEach(sub => {
-          if (!currentRules[sub.id]) { currentRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both' }; hasChanges = true; }
+          if (!currentRules[sub.id]) { 
+              currentRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both' }; 
+              hasChanges = true; 
+          }
         });
+        
+        setScoreRules(currentRules);
         if (hasChanges) {
-          setScoreRules(currentRules);
-          localStorage.setItem('unity_score_rules', JSON.stringify(currentRules));
+           localStorage.setItem('unity_score_rules', JSON.stringify(currentRules));
         }
       }
     } catch (err: any) { console.warn(`Erro assuntos: ${err.message}`); }
@@ -319,7 +344,6 @@ export const ScoreManagement: React.FC = () => {
   };
 
   const handleViewDetails = async (order: ServiceOrder) => {
-    // Configura o modal com os dados básicos
     setViewingOrder(order);
     setIsLoadingDetails(true);
 
@@ -327,7 +351,6 @@ export const ScoreManagement: React.FC = () => {
     if (!config) { setIsLoadingDetails(false); return; }
 
     try {
-        // Busca a OS novamente pelo ID para garantir que temos os campos de texto completos
         const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
         const res = await safeFetch(url, {
             method: 'POST',
@@ -344,8 +367,8 @@ export const ScoreManagement: React.FC = () => {
             const fullOrder = res.registros[0];
             setViewingOrder(prev => prev && prev.id === order.id ? {
                 ...prev,
-                description: fullOrder.mensagem,           // Campo padrão de descrição
-                solution: fullOrder.mensagem_resposta      // Campo padrão de solução/resposta
+                description: fullOrder.mensagem,           
+                solution: fullOrder.mensagem_resposta      
             } : prev);
         }
     } catch (e) {
@@ -356,18 +379,35 @@ export const ScoreManagement: React.FC = () => {
   };
 
   useEffect(() => {
-    const savedRules = localStorage.getItem('unity_score_rules');
-    if (savedRules) setScoreRules(JSON.parse(savedRules));
     fetchStaffData();
     fetchSubjects();
   }, [getApiConfig]);
 
-  const handleSaveRule = (e: React.FormEvent) => {
+  const handleSaveRule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingRule) {
       const updatedRules = { ...scoreRules, [editingRule.subject.id]: editingRule.rule };
       setScoreRules(updatedRules);
+      
+      // Salvar Local
       localStorage.setItem('unity_score_rules', JSON.stringify(updatedRules));
+      
+      // Salvar na API (Backend MySQL)
+      try {
+          await fetch('/api/score-rules', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  subjectId: editingRule.rule.subjectId,
+                  points: editingRule.rule.points,
+                  type: editingRule.rule.type
+                  // companyId é tratado no backend (ou adicionado aqui se tiver multi-tenant no frontend)
+              })
+          });
+      } catch(e) {
+          console.error("Falha ao salvar regra no banco:", e);
+      }
+
       setEditingRule(null);
     }
   };
@@ -376,18 +416,16 @@ export const ScoreManagement: React.FC = () => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
 
-    // Regra de Penalidade por Reabertura (Se reaberto dentro de 30 dias, pontos ficam negativos)
     if (order.reopeningDate && order.reopeningDate !== '-') {
-        const dateOriginal = new Date(order.closingDate); // Data 'final' original (mais antiga)
-        const dateReopening = new Date(order.reopeningDate); // Data de fechamento real (reabertura)
+        const dateOriginal = new Date(order.closingDate); 
+        const dateReopening = new Date(order.reopeningDate); 
         
         if (!isNaN(dateOriginal.getTime()) && !isNaN(dateReopening.getTime())) {
             const diffTime = Math.abs(dateReopening.getTime() - dateOriginal.getTime());
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
             
-            // Se a diferença for menor ou igual a 30 dias
             if (diffDays <= 30) {
-                points = -Math.abs(points); // Garante que seja negativo
+                points = -Math.abs(points);
             }
         }
     }
