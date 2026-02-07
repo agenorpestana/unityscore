@@ -58,6 +58,7 @@ export const Reports: React.FC = () => {
   // Novos mapas para Grupo de Usuário
   const [groupsMap, setGroupsMap] = useState<Map<string, string>>(new Map()); // id_grupo -> nome_grupo
   const [userToGroupMap, setUserToGroupMap] = useState<Map<string, string>>(new Map()); // id_usuario -> id_grupo
+  const [empToGroupMap, setEmpToGroupMap] = useState<Map<string, string>>(new Map()); // id_funcionario -> id_grupo (NOVO)
 
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
@@ -179,13 +180,11 @@ export const Reports: React.FC = () => {
       // 2. Buscar Grupos de Usuários (NOVO - Tabela 'usuarios_grupo')
       // Estratégia Robusta: Tenta vários métodos de busca
       let allGroups: any[] = [];
-      let groupFetchMethod = '';
-
+      
       // Tentativa A: Padrão (ID > 0)
       if (allGroups.length === 0) {
         try {
             allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
-            if (allGroups.length > 0) groupFetchMethod = 'Padrão';
         } catch (e) { console.warn('Erro fetch grupos padrão', e); }
       }
 
@@ -193,7 +192,6 @@ export const Reports: React.FC = () => {
       if (allGroups.length === 0) {
          try {
             allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
-            if (allGroups.length > 0) groupFetchMethod = 'Fallback ID';
          } catch (e) { console.warn('Erro fetch grupos ID', e); }
       }
 
@@ -215,7 +213,6 @@ export const Reports: React.FC = () => {
              });
              if (res.registros && Array.isArray(res.registros)) {
                  allGroups = res.registros;
-                 groupFetchMethod = 'Ativo=S';
              }
          } catch (e) { console.warn('Erro fetch grupos Ativo', e); }
       }
@@ -238,7 +235,6 @@ export const Reports: React.FC = () => {
           setPermissionWarning("Falha ao buscar Grupos. Tente liberar permissão na tabela 'usuarios_grupo'.");
       } else {
           setPermissionWarning(null);
-          //console.log(`Grupos carregados via método: ${groupFetchMethod}`, allGroups);
       }
 
       // Mapear Grupos (ID -> Nome)
@@ -265,6 +261,7 @@ export const Reports: React.FC = () => {
       // Mapear Usuários -> Funcionário E Usuário -> Grupo
       const newUserToEmpMap = new Map<string, string>();
       const newUserToGroupMap = new Map<string, string>();
+      const newEmpToGroupMap = new Map<string, string>(); // Mapeia ID Funcionário -> ID Grupo
 
       allUsers.forEach((u: any) => {
           const userId = String(u.id);
@@ -274,6 +271,10 @@ export const Reports: React.FC = () => {
           if (userId) {
               if (funcId && funcId !== '0' && funcId !== '') {
                   newUserToEmpMap.set(userId, funcId);
+                  // Se o usuário tem vínculo com funcionário e tem grupo, mapeia Funcionario -> Grupo
+                  if (groupId && groupId !== '0' && groupId !== '') {
+                      newEmpToGroupMap.set(funcId, groupId);
+                  }
               }
               if (groupId && groupId !== '0' && groupId !== '') {
                   newUserToGroupMap.set(userId, groupId);
@@ -282,6 +283,7 @@ export const Reports: React.FC = () => {
       });
       setUsersToEmployeeMap(newUserToEmpMap);
       setUserToGroupMap(newUserToGroupMap);
+      setEmpToGroupMap(newEmpToGroupMap);
 
       // Mapear Funcionários
       const newEmployeesMap = new Map<string, EmpInfo>();
@@ -450,21 +452,30 @@ export const Reports: React.FC = () => {
         let candidateByName: EmpInfo | undefined;
         
         // --- NOVA LÓGICA DE GRUPO ---
-        let groupNameFromUser: string | undefined;
+        // Agora verificamos 2 caminhos:
+        // 1. Pelo ID do Técnico (Funcionário) -> Usuário -> Grupo
+        // 2. Pelo ID do Login (Usuário que mexeu na OS) -> Grupo (Fallback)
+        let groupNameFound: string | undefined;
 
-        // 1. Tentar pegar o Grupo do Usuário (Prioridade Máxima para Função)
-        if (osLoginId && osLoginId !== '0') {
+        // Caminho 1: Via Funcionário (Mais correto segundo o usuário)
+        if (osTechId && osTechId !== '0') {
+             const groupIdFromTech = empToGroupMap.get(osTechId);
+             if (groupIdFromTech) {
+                 const gName = groupsMap.get(groupIdFromTech);
+                 groupNameFound = gName || `Grupo ID: ${groupIdFromTech}`;
+             }
+        }
+
+        // Caminho 2: Via Login (Fallback se o técnico não tiver usuário vinculado)
+        if (!groupNameFound && osLoginId && osLoginId !== '0') {
             const groupId = userToGroupMap.get(osLoginId);
             if (groupId) {
                 const gName = groupsMap.get(groupId);
-                if (gName) {
-                    groupNameFromUser = gName;
-                } else {
-                    // Fallback Visual: Mostra o ID se não conseguiu traduzir (provável falta de permissão na tabela grupos)
-                    groupNameFromUser = `Grupo ID: ${groupId}`;
-                }
+                groupNameFound = gName || `Grupo ID: ${groupId}`;
             }
+        }
 
+        if (osLoginId && osLoginId !== '0') {
             const linkedEmpId = usersToEmployeeMap.get(osLoginId);
             if (linkedEmpId) candidateByLoginId = employeesMap.get(linkedEmpId);
         }
@@ -475,16 +486,16 @@ export const Reports: React.FC = () => {
         // --- DECISÃO DE QUEM É O TÉCNICO E QUAL A FUNÇÃO ---
         let finalCandidate: EmpInfo | undefined;
 
-        if (candidateByLoginId) finalCandidate = candidateByLoginId;
-        else if (candidateByTechId) finalCandidate = candidateByTechId;
+        if (candidateByTechId) finalCandidate = candidateByTechId; // Prioridade para quem está no campo Técnico
+        else if (candidateByLoginId) finalCandidate = candidateByLoginId;
         else finalCandidate = candidateByName;
 
         if (finalCandidate) {
             techName = finalCandidate.name;
-            // Prioriza o Grupo do Usuário, depois a Função do Funcionário
-            functionName = groupNameFromUser || finalCandidate.functionName;
+            // Prioriza o Grupo encontrado (via Tecnico ou Login), senão usa a Função do cadastro
+            functionName = groupNameFound || finalCandidate.functionName;
         } else {
-            if (groupNameFromUser) functionName = groupNameFromUser;
+            if (groupNameFound) functionName = groupNameFound;
             else if (osLoginId !== '0') functionName = `U:${osLoginId} (Ñ Vinculado)`;
         }
 
