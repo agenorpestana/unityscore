@@ -177,11 +177,47 @@ export const Reports: React.FC = () => {
       }
 
       // 2. Buscar Grupos de Usuários (NOVO - Tabela 'usuarios_grupo')
-      let allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
-      // Tentativa de fallback se falhar com prefixo
+      // Estratégia Robusta: Tenta vários métodos de busca
+      let allGroups: any[] = [];
+      let groupFetchMethod = '';
+
+      // Tentativa A: Padrão (ID > 0)
       if (allGroups.length === 0) {
-          const retryGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
-          if (retryGroups.length > 0) allGroups = retryGroups;
+        try {
+            allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
+            if (allGroups.length > 0) groupFetchMethod = 'Padrão';
+        } catch (e) { console.warn('Erro fetch grupos padrão', e); }
+      }
+
+      // Tentativa B: Fallback (id > 0 sem prefixo)
+      if (allGroups.length === 0) {
+         try {
+            allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
+            if (allGroups.length > 0) groupFetchMethod = 'Fallback ID';
+         } catch (e) { console.warn('Erro fetch grupos ID', e); }
+      }
+
+      // Tentativa C: Busca por Ativo = S (Geralmente infalível se tabela existir)
+      if (allGroups.length === 0) {
+         try {
+             // Busca manual sem usar o helper fetchAllRecords para ter controle total do body
+             const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
+                 method: 'POST',
+                 headers: config.headers,
+                 body: JSON.stringify({ 
+                     qtype: 'usuarios_grupo.ativo', 
+                     query: 'S', 
+                     oper: '=', 
+                     rp: '2000', 
+                     sortname: 'usuarios_grupo.grupo', 
+                     sortorder: 'asc' 
+                 })
+             });
+             if (res.registros && Array.isArray(res.registros)) {
+                 allGroups = res.registros;
+                 groupFetchMethod = 'Ativo=S';
+             }
+         } catch (e) { console.warn('Erro fetch grupos Ativo', e); }
       }
 
       const [allEmployees, allUsers] = await Promise.all([
@@ -199,9 +235,10 @@ export const Reports: React.FC = () => {
 
       // Checagem de Permissões Críticas
       if (allGroups.length === 0 && allUsers.length > 0) {
-          setPermissionWarning("Atenção: Tabela 'usuarios_grupo' vazia. Verifique permissões do token no IXC.");
+          setPermissionWarning("Falha ao buscar Grupos. Tente liberar permissão na tabela 'usuarios_grupo'.");
       } else {
           setPermissionWarning(null);
+          //console.log(`Grupos carregados via método: ${groupFetchMethod}`, allGroups);
       }
 
       // Mapear Grupos (ID -> Nome)
