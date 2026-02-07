@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap, Users } from 'lucide-react';
+import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap, Users, Filter } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
@@ -26,6 +26,17 @@ const LINE_COLORS = [
     '#f43f5e', // Rose 500
     '#a855f7', // Purple 500
 ];
+
+const KNOWN_GROUPS: Record<string, string> = {
+  '1': 'ADM',
+  '2': 'Atendimento',
+  '3': 'Suporte',
+  '4': 'Suporte Campo',
+  '5': 'Atendimento ext',
+  '6': 'Financeiro',
+  '8': 'Comercial',
+  '10': 'Revenda'
+};
 
 export const TvDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
@@ -74,9 +85,45 @@ export const TvDashboard: React.FC = () => {
         return response.json();
     } catch (e: any) {
         if (e.name === 'AbortError') throw e;
-        console.error("Fetch error:", e);
+        // console.error("Fetch error:", e);
         return { registros: [] };
     }
+  };
+
+  const fetchAllRecords = async (config: any, path: string, sortField: string) => {
+      let allRecords: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      const rp = 1000; 
+
+      while (hasMore) {
+          try {
+              const res = await safeFetch(buildUrl(config, path), {
+                  method: 'POST',
+                  headers: config.headers,
+                  body: JSON.stringify({ 
+                      qtype: sortField, 
+                      query: '0', 
+                      oper: '>', 
+                      rp: String(rp), 
+                      page: String(page),
+                      sortname: sortField, 
+                      sortorder: 'asc' 
+                  })
+              });
+              
+              if (res.registros && Array.isArray(res.registros)) {
+                  allRecords = [...allRecords, ...res.registros];
+                  if (res.registros.length < rp) hasMore = false;
+                  else page++;
+              } else {
+                  hasMore = false;
+              }
+          } catch (e) {
+              hasMore = false;
+          }
+      }
+      return allRecords;
   };
 
   const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
@@ -142,32 +189,37 @@ export const TvDashboard: React.FC = () => {
             setScoreRules(rules);
         }
 
-        // --- 3. Get ALL Active Employees & Map Groups ---
-        // Parallel Fetch: Funcionarios e Usuarios (para saber o grupo)
-        const [empRes, userRes] = await Promise.all([
-            safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
-                method: 'POST', headers: config.headers,
-                body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' }),
-                signal: controller.signal
-            }),
-            safeFetch(buildUrl(config, '/webservice/v1/usuarios'), {
-                method: 'POST', headers: config.headers,
-                body: JSON.stringify({ qtype: 'usuarios.ativo', query: 'S', oper: '=', rp: '10000' }),
-                signal: controller.signal
-            })
+        // --- 3. Get ALL Active Employees & Map Groups (Robust Fetch) ---
+        const [allEmployees, allUsers] = await Promise.all([
+             fetchAllRecords(config, '/webservice/v1/funcionarios', 'funcionarios.id'),
+             fetchAllRecords(config, '/webservice/v1/usuarios', 'usuarios.id')
         ]);
 
-        // Mapeia ID Funcionario -> Nome
-        const techEmployees = new Map<string, string>(); 
-        (empRes.registros || []).forEach((e: any) => {
-             techEmployees.set(String(e.id), e.funcionario || e.nome);
+        // Maps
+        const techEmployees = new Map<string, string>(); // ID -> Nome
+        const nameToTechId = new Map<string, string>(); // Nome -> ID
+        
+        allEmployees.forEach((e: any) => {
+             const name = e.funcionario || e.nome;
+             if (e.id && name) {
+                 techEmployees.set(String(e.id), name);
+                 nameToTechId.set(name.toLowerCase().trim(), String(e.id));
+             }
         });
 
-        // Mapeia ID Funcionario -> ID Grupo (via Usuario)
-        const employeeGroupMap = new Map<string, string>();
-        (userRes.registros || []).forEach((u: any) => {
-            if (u.funcionario && u.funcionario !== '0') {
-                employeeGroupMap.set(String(u.funcionario), String(u.id_grupo));
+        const userToGroupMap = new Map<string, string>(); // UserID -> GroupID
+        const userToEmployeeMap = new Map<string, string>(); // UserID -> EmpID
+        const empToGroupMap = new Map<string, string>(); // EmpID -> GroupID
+
+        allUsers.forEach((u: any) => {
+            const uId = String(u.id);
+            const gId = String(u.id_grupo);
+            const empId = String(u.funcionario);
+
+            if (gId && gId !== '0') userToGroupMap.set(uId, gId);
+            if (empId && empId !== '0') {
+                userToEmployeeMap.set(uId, empId);
+                if (gId && gId !== '0') empToGroupMap.set(empId, gId);
             }
         });
 
@@ -225,21 +277,53 @@ export const TvDashboard: React.FC = () => {
         const totalTodayPerTech: Record<string, number> = {};
 
         allOrders.forEach((reg: any) => {
-            const techId = String(reg.id_tecnico);
+            // LÓGICA ROBUSTA DE IDENTIFICAÇÃO (Mesma do Reports.tsx)
+            let techId = String(reg.id_tecnico);
+            let techName = '';
+            let groupId = '';
+
+            // 1. Tenta pelo ID do Técnico direto
+            if (techId && techId !== '0' && techEmployees.has(techId)) {
+                techName = techEmployees.get(techId)!;
+                groupId = empToGroupMap.get(techId) || '';
+            }
             
-            // FILTRO DE GRUPO/TÉCNICO
-            if (!techEmployees.has(techId)) return;
-            
-            // Verifica Grupo se não for ALL
-            if (viewMode !== 'ALL') {
-                const groupId = employeeGroupMap.get(techId);
-                // Se o viewMode for 4 (Suporte Campo), e o groupId não for 4, pula
-                // OBS: Se o usuário não tiver grupo vinculado, ele será excluído da view filtrada
-                if (groupId !== viewMode) return; 
+            // 2. Fallback: Tenta pelo ID de Login (Usuário)
+            if ((!techName || techId === '0') && reg.id_login) {
+                const loginId = String(reg.id_login);
+                // Tenta achar o funcionário vinculado ao usuário
+                const linkedEmpId = userToEmployeeMap.get(loginId);
+                
+                if (linkedEmpId && techEmployees.has(linkedEmpId)) {
+                    techId = linkedEmpId;
+                    techName = techEmployees.get(linkedEmpId)!;
+                    groupId = empToGroupMap.get(linkedEmpId) || '';
+                } else {
+                    // Se não achou funcionário, tenta pegar grupo direto do usuário
+                    groupId = userToGroupMap.get(loginId) || '';
+                }
             }
 
-            const techName = techEmployees.get(techId)!;
-            
+            // 3. Fallback: Nome escrito na OS
+            if (!techName && reg.tecnico) {
+                 techName = reg.tecnico;
+                 // Tenta achar ID pelo nome
+                 const foundId = nameToTechId.get(techName.toLowerCase().trim());
+                 if (foundId) {
+                     techId = foundId;
+                     groupId = empToGroupMap.get(foundId) || '';
+                 }
+            }
+
+            // Se ainda não identificou nome, ignora (OS órfã)
+            if (!techName) return;
+
+            // --- FILTRO DE GRUPO ---
+            if (viewMode !== 'ALL') {
+                if (groupId !== viewMode) return;
+            }
+
+            // Prossegue com cálculo
             let closingDateStr = reg.data_fechamento;
             let reopeningDateStr = '-';
 
@@ -270,16 +354,19 @@ export const TvDashboard: React.FC = () => {
 
             const points = getPoints(orderObj, rules);
 
+            // Chave única para agregação
+            const uniqueKey = techName; // Agrega por nome para evitar duplicar se ID mudar
+
             // Quarter
-            if (!statsQuarter[techId]) statsQuarter[techId] = { pts: 0, count: 0, name: techName };
-            statsQuarter[techId].pts += points;
-            statsQuarter[techId].count += 1;
+            if (!statsQuarter[uniqueKey]) statsQuarter[uniqueKey] = { pts: 0, count: 0, name: techName };
+            statsQuarter[uniqueKey].pts += points;
+            statsQuarter[uniqueKey].count += 1;
 
             // Month
             if (closingDateStr.startsWith(monthPrefix)) {
-                if (!statsMonth[techId]) statsMonth[techId] = { pts: 0, count: 0, name: techName };
-                statsMonth[techId].pts += points;
-                statsMonth[techId].count += 1;
+                if (!statsMonth[uniqueKey]) statsMonth[uniqueKey] = { pts: 0, count: 0, name: techName };
+                statsMonth[uniqueKey].pts += points;
+                statsMonth[uniqueKey].count += 1;
             }
 
             // Today Hourly
@@ -289,15 +376,15 @@ export const TvDashboard: React.FC = () => {
                 
                 if (hourStr) {
                     const hour = parseInt(hourStr, 10);
-                    if (!hourlyStatsToday[techId]) {
-                        hourlyStatsToday[techId] = new Array(12).fill(0); 
-                        totalTodayPerTech[techId] = 0;
+                    if (!hourlyStatsToday[uniqueKey]) {
+                        hourlyStatsToday[uniqueKey] = new Array(12).fill(0); 
+                        totalTodayPerTech[uniqueKey] = 0;
                     }
 
-                    totalTodayPerTech[techId]++;
+                    totalTodayPerTech[uniqueKey]++;
                     if (hour >= 8 && hour <= 19) {
                         const idx = hour - 8;
-                        hourlyStatsToday[techId][idx]++;
+                        hourlyStatsToday[uniqueKey][idx]++;
                     }
                 }
             }
@@ -316,22 +403,21 @@ export const TvDashboard: React.FC = () => {
         let calculatedMaxY = 0;
         const currentHour = new Date().getHours();
 
-        const linesData: TechnicianHourlyLine[] = top5TodayIds.map((id, index) => {
-            const data = hourlyStatsToday[id];
+        const linesData: TechnicianHourlyLine[] = top5TodayIds.map((key, index) => {
+            const data = hourlyStatsToday[key];
             const maxInLine = Math.max(...data);
             if (maxInLine > calculatedMaxY) calculatedMaxY = maxInLine;
 
-            const fullName = techEmployees.get(id) || 'Unknown';
-            const shortName = fullName.split(' ')[0];
+            const shortName = key.split(' ')[0];
             const currentHourIdx = Math.max(0, Math.min(currentHour - 8, 11));
             const lastCount = data[currentHourIdx] || 0;
 
             return {
                 technicianName: shortName,
-                fullName: fullName,
+                fullName: key,
                 color: LINE_COLORS[index % LINE_COLORS.length],
                 data: data,
-                totalToday: totalTodayPerTech[id],
+                totalToday: totalTodayPerTech[key],
                 lastHourCount: lastCount
             };
         });
@@ -387,6 +473,7 @@ export const TvDashboard: React.FC = () => {
   // Safe Name Access
   const safeCompanyName = companyName || 'Empresa';
   const safeInitial = safeCompanyName.charAt(0) || '?';
+  const currentViewLabel = viewMode === 'ALL' ? 'Todos os Setores' : (KNOWN_GROUPS[viewMode] || `Grupo ${viewMode}`);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-6 overflow-hidden font-sans selection:bg-brand-500 selection:text-white">
@@ -402,9 +489,15 @@ export const TvDashboard: React.FC = () => {
              </div>
              <div>
                  <h1 className="text-4xl font-black tracking-tight text-white mb-1">{safeCompanyName}</h1>
-                 <p className="text-slate-400 flex items-center gap-2 font-medium uppercase tracking-widest text-xs">
-                    <Zap size={14} className="text-yellow-400" /> Performance em Tempo Real
-                 </p>
+                 <div className="flex items-center gap-3">
+                     <p className="text-slate-400 flex items-center gap-2 font-medium uppercase tracking-widest text-xs">
+                        <Zap size={14} className="text-yellow-400" /> Performance em Tempo Real
+                     </p>
+                     <span className="text-slate-600">|</span>
+                     <p className="text-indigo-400 flex items-center gap-1 font-bold uppercase tracking-wide text-xs">
+                        <Filter size={14} /> {currentViewLabel}
+                     </p>
+                 </div>
              </div>
          </div>
          
