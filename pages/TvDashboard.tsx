@@ -476,11 +476,11 @@ export const TvDashboard: React.FC = () => {
   const currentViewLabel = viewMode === 'ALL' ? 'Todos os Setores' : (KNOWN_GROUPS[viewMode] || `Grupo ${viewMode}`);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-6 overflow-hidden font-sans selection:bg-brand-500 selection:text-white">
+    <div className="min-h-screen bg-slate-950 text-white p-4 lg:p-6 overflow-y-auto font-sans selection:bg-brand-500 selection:text-white pb-20">
       {/* Header */}
-      <header className="flex justify-between items-center mb-6 bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-2xl backdrop-blur-md relative">
-         <div className="flex items-center gap-5">
-             <div className="bg-white rounded-xl p-2 h-20 w-20 flex items-center justify-center shadow-lg">
+      <header className="flex flex-col xl:flex-row justify-between items-center mb-6 bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-2xl backdrop-blur-md relative gap-6">
+         <div className="flex items-center gap-5 w-full xl:w-auto">
+             <div className="bg-white rounded-xl p-2 h-20 w-20 flex items-center justify-center shadow-lg shrink-0">
                 {logoUrl ? (
                     <img src={logoUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
                 ) : (
@@ -488,12 +488,12 @@ export const TvDashboard: React.FC = () => {
                 )}
              </div>
              <div>
-                 <h1 className="text-4xl font-black tracking-tight text-white mb-1">{safeCompanyName}</h1>
-                 <div className="flex items-center gap-3">
+                 <h1 className="text-3xl lg:text-4xl font-black tracking-tight text-white mb-1 leading-tight">{safeCompanyName}</h1>
+                 <div className="flex flex-wrap items-center gap-3">
                      <p className="text-slate-400 flex items-center gap-2 font-medium uppercase tracking-widest text-xs">
                         <Zap size={14} className="text-yellow-400" /> Performance em Tempo Real
                      </p>
-                     <span className="text-slate-600">|</span>
+                     <span className="text-slate-600 hidden xl:inline">|</span>
                      <p className="text-indigo-400 flex items-center gap-1 font-bold uppercase tracking-wide text-xs">
                         <Filter size={14} /> {currentViewLabel}
                      </p>
@@ -501,7 +501,7 @@ export const TvDashboard: React.FC = () => {
              </div>
          </div>
          
-         <div className="flex flex-col items-end gap-3">
+         <div className="flex flex-row-reverse xl:flex-col items-center xl:items-end gap-3 w-full xl:w-auto justify-between xl:justify-center">
              {/* View Selector */}
              <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700">
                 <Users size={16} className="text-slate-400 ml-2" />
@@ -515,8 +515,8 @@ export const TvDashboard: React.FC = () => {
                 </select>
              </div>
 
-             <div>
-                 <div className="text-5xl font-mono font-bold text-white tracking-tighter shadow-black drop-shadow-lg text-right">
+             <div className="text-right">
+                 <div className="text-3xl lg:text-5xl font-mono font-bold text-white tracking-tighter shadow-black drop-shadow-lg">
                      {new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
                  </div>
                  <div className="flex items-center justify-end gap-2 mt-2">
@@ -528,13 +528,13 @@ export const TvDashboard: React.FC = () => {
       </header>
 
       {/* Grid Layout */}
-      <div className="grid grid-cols-12 gap-6 h-[calc(100vh-170px)]">
+      <div className="grid grid-cols-12 gap-6 lg:h-[calc(100vh-250px)] h-auto">
           
           {/* Left Column: Rankings */}
           <div className="col-span-12 lg:col-span-4 flex flex-col gap-6 h-full">
               
               {/* Card: Top 3 Month */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col relative overflow-hidden h-1/2">
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(50%-12px)]">
                   <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Trophy size={140} /></div>
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                       <Trophy size={24} className="text-yellow-400" />
@@ -564,7 +564,7 @@ export const TvDashboard: React.FC = () => {
               </div>
 
               {/* Card: Top 3 Quarter */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex-1 relative overflow-hidden flex flex-col h-1/2">
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex-1 relative overflow-hidden flex flex-col h-[400px] lg:h-[calc(50%-12px)]">
                   <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Medal size={140} /></div>
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                       <Medal size={24} className="text-indigo-400" />
@@ -589,7 +589,7 @@ export const TvDashboard: React.FC = () => {
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
               {/* Hourly Evolution Line Chart (HOJE) */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 h-[60%] flex flex-col relative overflow-hidden">
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(60%-12px)]">
                   
                   <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-10">
                     <h2 className="text-xl font-bold flex items-center gap-3 text-emerald-400 uppercase tracking-wider">
@@ -690,7 +690,7 @@ export const TvDashboard: React.FC = () => {
               </div>
 
               {/* Top 10 Volume */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 h-[40%] flex flex-col">
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(40%-12px)]">
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                      <CheckCircle size={24} className="text-blue-400" />
                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
