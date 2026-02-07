@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap } from 'lucide-react';
+import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap, Users } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
@@ -32,6 +32,9 @@ export const TvDashboard: React.FC = () => {
   const [companyName, setCompanyName] = useState('Carregando...');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   
+  // Estado para o Filtro de Grupo (Padrão: 4 = Suporte Campo)
+  const [viewMode, setViewMode] = useState<'4' | 'ALL'>('4');
+
   // Data States
   const [topMonth, setTopMonth] = useState<RankingItem[]>([]);
   const [topQuarter, setTopQuarter] = useState<RankingItem[]>([]);
@@ -110,7 +113,6 @@ export const TvDashboard: React.FC = () => {
     
     try {
         // --- 1. Garantir Dados da Empresa (Nome/Logo) ---
-        // Se faltar nome ou logo no cache, busca do backend
         if (!config.name || !config.logo) {
             try {
                 const compRes = await fetch(`/api/companies/${config.id}`, { signal: controller.signal });
@@ -118,7 +120,6 @@ export const TvDashboard: React.FC = () => {
                     const compData = await compRes.json();
                     setCompanyName(compData.name || 'Empresa');
                     setLogoUrl(compData.logoUrl);
-                    // Atualiza cache local silenciosamente para a próxima
                     const currentCache = JSON.parse(localStorage.getItem('unity_company_data') || '{}');
                     localStorage.setItem('unity_company_data', JSON.stringify({ ...currentCache, name: compData.name, logoUrl: compData.logoUrl }));
                 } else {
@@ -141,16 +142,33 @@ export const TvDashboard: React.FC = () => {
             setScoreRules(rules);
         }
 
-        // --- 3. Get ALL Active Employees ---
-        const empRes = await safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
-             method: 'POST', headers: config.headers,
-             body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' }),
-             signal: controller.signal
-        });
+        // --- 3. Get ALL Active Employees & Map Groups ---
+        // Parallel Fetch: Funcionarios e Usuarios (para saber o grupo)
+        const [empRes, userRes] = await Promise.all([
+            safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
+                method: 'POST', headers: config.headers,
+                body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' }),
+                signal: controller.signal
+            }),
+            safeFetch(buildUrl(config, '/webservice/v1/usuarios'), {
+                method: 'POST', headers: config.headers,
+                body: JSON.stringify({ qtype: 'usuarios.ativo', query: 'S', oper: '=', rp: '10000' }),
+                signal: controller.signal
+            })
+        ]);
 
-        const techEmployees = new Map<string, string>(); // ID -> Name
+        // Mapeia ID Funcionario -> Nome
+        const techEmployees = new Map<string, string>(); 
         (empRes.registros || []).forEach((e: any) => {
              techEmployees.set(String(e.id), e.funcionario || e.nome);
+        });
+
+        // Mapeia ID Funcionario -> ID Grupo (via Usuario)
+        const employeeGroupMap = new Map<string, string>();
+        (userRes.registros || []).forEach((u: any) => {
+            if (u.funcionario && u.funcionario !== '0') {
+                employeeGroupMap.set(String(u.funcionario), String(u.id_grupo));
+            }
         });
 
         // --- 4. Fetch OS Data ---
@@ -208,7 +226,17 @@ export const TvDashboard: React.FC = () => {
 
         allOrders.forEach((reg: any) => {
             const techId = String(reg.id_tecnico);
+            
+            // FILTRO DE GRUPO/TÉCNICO
             if (!techEmployees.has(techId)) return;
+            
+            // Verifica Grupo se não for ALL
+            if (viewMode !== 'ALL') {
+                const groupId = employeeGroupMap.get(techId);
+                // Se o viewMode for 4 (Suporte Campo), e o groupId não for 4, pula
+                // OBS: Se o usuário não tiver grupo vinculado, ele será excluído da view filtrada
+                if (groupId !== viewMode) return; 
+            }
 
             const techName = techEmployees.get(techId)!;
             
@@ -326,7 +354,7 @@ export const TvDashboard: React.FC = () => {
     loadData();
     const interval = setInterval(loadData, 30000); 
     return () => clearInterval(interval);
-  }, [getApiConfig]);
+  }, [getApiConfig, viewMode]); // Adicionado viewMode para recarregar ao trocar o filtro
 
   if (loading) {
       return (
@@ -363,7 +391,7 @@ export const TvDashboard: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-950 text-white p-6 overflow-hidden font-sans selection:bg-brand-500 selection:text-white">
       {/* Header */}
-      <header className="flex justify-between items-center mb-6 bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-2xl backdrop-blur-md">
+      <header className="flex justify-between items-center mb-6 bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-2xl backdrop-blur-md relative">
          <div className="flex items-center gap-5">
              <div className="bg-white rounded-xl p-2 h-20 w-20 flex items-center justify-center shadow-lg">
                 {logoUrl ? (
@@ -379,13 +407,29 @@ export const TvDashboard: React.FC = () => {
                  </p>
              </div>
          </div>
-         <div className="text-right">
-             <div className="text-5xl font-mono font-bold text-white tracking-tighter shadow-black drop-shadow-lg">
-                 {new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
+         
+         <div className="flex flex-col items-end gap-3">
+             {/* View Selector */}
+             <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700">
+                <Users size={16} className="text-slate-400 ml-2" />
+                <select 
+                    value={viewMode}
+                    onChange={(e) => setViewMode(e.target.value as '4' | 'ALL')}
+                    className="bg-transparent text-sm font-bold text-white outline-none border-none p-2 cursor-pointer focus:ring-0"
+                >
+                    <option value="4" className="bg-slate-900 text-white">Suporte Campo</option>
+                    <option value="ALL" className="bg-slate-900 text-white">Todos os Setores</option>
+                </select>
              </div>
-             <div className="flex items-center justify-end gap-2 mt-2">
-                 <div className={`h-2 w-2 rounded-full ${isUpdating ? 'bg-green-400 animate-ping' : 'bg-slate-600'}`}></div>
-                 <p className="text-slate-500 text-xs font-mono">Última atualização: {lastUpdated}</p>
+
+             <div>
+                 <div className="text-5xl font-mono font-bold text-white tracking-tighter shadow-black drop-shadow-lg text-right">
+                     {new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
+                 </div>
+                 <div className="flex items-center justify-end gap-2 mt-2">
+                     <div className={`h-2 w-2 rounded-full ${isUpdating ? 'bg-green-400 animate-ping' : 'bg-slate-600'}`}></div>
+                     <p className="text-slate-500 text-xs font-mono">Última atualização: {lastUpdated}</p>
+                 </div>
              </div>
          </div>
       </header>
