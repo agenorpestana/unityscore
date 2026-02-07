@@ -7,7 +7,7 @@ interface ReportFilter {
   endDate: string;
   sortBy: 'NAME' | 'POINTS';
   technicianId: string;
-  function: string; // Antes era setor, agora filtra por nome da função
+  function: string; 
   type: 'SYNTHETIC' | 'ANALYTICAL';
   dateType: 'opening' | 'closing';
 }
@@ -15,7 +15,7 @@ interface ReportFilter {
 interface ReportData {
   technicianId: string;
   technicianName: string;
-  role: string; // Agora armazena a Função (Cargo)
+  role: string;
   totalOrders: number;
   totalPoints: number;
   orders: ServiceOrder[];
@@ -24,7 +24,7 @@ interface ReportData {
 interface EmpInfo {
   id: string;
   name: string;
-  functionName: string; // Adicionado para guardar o cargo
+  functionName: string;
 }
 
 export const Reports: React.FC = () => {
@@ -48,7 +48,8 @@ export const Reports: React.FC = () => {
 
   const [technicians, setTechnicians] = useState<(Technician & { role?: string })[]>([]);
   const [employeesMap, setEmployeesMap] = useState<Map<string, EmpInfo>>(new Map());
-  // Substituído sectorsMap por functionsMap
+  const [usersToEmployeeMap, setUsersToEmployeeMap] = useState<Map<string, string>>(new Map()); // id_login -> id_funcionario
+  const [nameToEmployeeMap, setNameToEmployeeMap] = useState<Map<string, EmpInfo>>(new Map()); // nome -> EmpInfo
   const [functionsMap, setFunctionsMap] = useState<Map<string, string>>(new Map());
   
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
@@ -120,32 +121,24 @@ export const Reports: React.FC = () => {
     if (!config) return;
 
     try {
-      // 1. Buscar Funções (Cargos) e Funcionários
-      const [functionsData, empData] = await Promise.all([
+      // 1. Buscar Funções, Funcionários e Usuários
+      const [functionsData, empData, usersData] = await Promise.all([
         safeFetch(buildUrl(config, '/webservice/v1/fl_funcoes'), { 
             method: 'POST', 
             headers: config.headers, 
-            body: JSON.stringify({ 
-                qtype: 'fl_funcoes.id', 
-                query: '0', 
-                oper: '>', 
-                rp: '1000', 
-                sortname: 'fl_funcoes.funcao', 
-                sortorder: 'asc' 
-            }) 
+            body: JSON.stringify({ qtype: 'fl_funcoes.id', query: '0', oper: '>', rp: '1000', sortname: 'fl_funcoes.funcao', sortorder: 'asc' }) 
         }).catch(() => ({ registros: [] })),
         
         safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), { 
             method: 'POST', 
             headers: config.headers, 
-            body: JSON.stringify({ 
-                qtype: 'funcionarios.id', 
-                query: '0', 
-                oper: '>', 
-                rp: '10000', 
-                sortname: 'funcionarios.funcionario', 
-                sortorder: 'asc' 
-            }) 
+            body: JSON.stringify({ qtype: 'funcionarios.id', query: '0', oper: '>', rp: '10000', sortname: 'funcionarios.funcionario', sortorder: 'asc' }) 
+        }).catch(() => ({ registros: [] })),
+
+        safeFetch(buildUrl(config, '/webservice/v1/usuarios'), { 
+            method: 'POST', 
+            headers: config.headers, 
+            body: JSON.stringify({ qtype: 'usuarios.id', query: '0', oper: '>', rp: '10000' }) 
         }).catch(() => ({ registros: [] }))
       ]);
 
@@ -163,8 +156,20 @@ export const Reports: React.FC = () => {
       }
       setFunctionsMap(newFunctionsMap);
 
-      // Mapear Funcionários e associar sua função
+      // Mapear Usuários -> Funcionário
+      const newUserToEmpMap = new Map<string, string>();
+      if (usersData.registros) {
+          usersData.registros.forEach((u: any) => {
+              if (u.id && u.funcionario && u.funcionario !== '0') {
+                  newUserToEmpMap.set(String(u.id), String(u.funcionario));
+              }
+          });
+      }
+      setUsersToEmployeeMap(newUserToEmpMap);
+
+      // Mapear Funcionários
       const newEmployeesMap = new Map<string, EmpInfo>();
+      const newNameMap = new Map<string, EmpInfo>();
       const combinedTechList: (Technician & { role?: string })[] = [];
       const usedRoles = new Set<string>();
 
@@ -172,7 +177,6 @@ export const Reports: React.FC = () => {
         empData.registros.forEach((r: any) => {
           const name = r.funcionario || r.nome || `Func. ${r.id}`;
           
-          // Lógica de fallback: Nome -> ID -> Sem Função
           let funcName = 'Sem Função';
           const funcId = r.id_funcao;
 
@@ -181,12 +185,13 @@ export const Reports: React.FC = () => {
               if (mapped) {
                   funcName = mapped;
               } else {
-                  // Fallback para ID se não achar o nome
-                  funcName = `ID: ${funcId}`;
+                  funcName = `ID Função: ${funcId}`;
               }
           }
 
-          newEmployeesMap.set(String(r.id), { id: String(r.id), name, functionName: funcName });
+          const empInfo = { id: String(r.id), name, functionName: funcName };
+          newEmployeesMap.set(String(r.id), empInfo);
+          newNameMap.set(name.toLowerCase().trim(), empInfo);
           
           if (r.ativo !== 'N') {
             combinedTechList.push({ id: String(r.id), name, role: funcName });
@@ -198,9 +203,9 @@ export const Reports: React.FC = () => {
       }
 
       setEmployeesMap(newEmployeesMap);
+      setNameToEmployeeMap(newNameMap);
       setTechnicians(combinedTechList);
       
-      // Unir funções cadastradas com funções (IDs) encontradas nos funcionários para o filtro
       const allFilters = new Set([...Array.from(functionNamesSet), ...Array.from(usedRoles)]);
       setAvailableFunctions(Array.from(allFilters).sort()); 
       
@@ -254,7 +259,7 @@ export const Reports: React.FC = () => {
       let allDateRegistros: any[] = [];
       let page = 1;
       let fetchedAll = false;
-      const MAX_PAGES = 100; // Limite alto para garantir busca completa
+      const MAX_PAGES = 100; // Limite alto
       const PAGE_SIZE = 500;
 
       // 2. Loop de Busca Principal
@@ -302,7 +307,7 @@ export const Reports: React.FC = () => {
 
       const activeData = await activePromise.catch(() => ({ registros: [] }));
       
-      // 4. Unificação e Normalização
+      // 4. Unificação
       const allRecords = [...allDateRegistros, ...(activeData.registros || [])];
       
       // Remove duplicatas
@@ -310,28 +315,41 @@ export const Reports: React.FC = () => {
       allRecords.forEach((item: any) => uniqueRecordsMap.set(item.id, item));
       let uniqueOrders = Array.from(uniqueRecordsMap.values());
 
-      // Filtro de status se for por data de fechamento
+      // Filtro de status
       if (filters.dateType === 'closing') {
         uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
       }
 
-      // 5. Mapeamento para Objeto ServiceOrder e Associação da FUNÇÃO
+      // 5. Mapeamento Inteligente
       const orders: (ServiceOrder & { technicianFunction?: string })[] = uniqueOrders.map((reg: any) => {
-        let techName = 'OS SEM TÉCNICO';
+        let techName = reg.tecnico || 'OS SEM TÉCNICO';
         let functionName = 'Sem Função'; 
-        const techId = String(reg.id_tecnico); 
+        let empInfo: EmpInfo | undefined;
 
-        // Recupera nome e função do mapa de funcionários pré-carregado
+        const techId = String(reg.id_tecnico); 
+        const loginId = String(reg.id_login);
+
+        // Tentativa 1: ID Técnico direto
         if (techId && techId !== '0') {
-           const employee = employeesMap.get(techId);
-           if (employee) {
-               techName = employee.name;
-               functionName = employee.functionName || 'Sem Função';
-           } else {
-               techName = reg.tecnico || `Técnico #${techId}`;
-           }
-        } else if (reg.tecnico) {
-           techName = reg.tecnico;
+            empInfo = employeesMap.get(techId);
+        }
+
+        // Tentativa 2: Via Login (Usuário -> Funcionário)
+        if (!empInfo && loginId && loginId !== '0') {
+            const linkedEmpId = usersToEmployeeMap.get(loginId);
+            if (linkedEmpId) {
+                empInfo = employeesMap.get(linkedEmpId);
+            }
+        }
+
+        // Tentativa 3: Via Nome (Fallback)
+        if (!empInfo && reg.tecnico) {
+            empInfo = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
+        }
+
+        if (empInfo) {
+            techName = empInfo.name;
+            functionName = empInfo.functionName;
         }
 
         const rawFinal = reg.data_final;
@@ -347,11 +365,14 @@ export const Reports: React.FC = () => {
            }
         }
 
+        // Recupera o ID real do técnico se achou via login/nome para consistência do filtro
+        const finalTechId = empInfo ? empInfo.id : techId;
+
         return {
           id: reg.id,
-          technicianId: reg.id_tecnico,
+          technicianId: finalTechId,
           technicianName: techName,
-          technicianFunction: functionName, // Usamos a função do funcionário, não o setor da OS
+          technicianFunction: functionName, 
           clientId: reg.id_cliente ? String(reg.id_cliente) : '',
           clientName: '...',
           subjectId: reg.id_assunto,
@@ -363,7 +384,7 @@ export const Reports: React.FC = () => {
         };
       });
 
-      // 6. Filtros Finais (Data Fim, Técnico, Função)
+      // 6. Filtros Finais
       const filteredOrders = orders.filter(order => {
           const matchTech = filters.technicianId ? order.technicianId === filters.technicianId : true;
           
