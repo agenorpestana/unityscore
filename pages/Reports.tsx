@@ -207,7 +207,7 @@ export const Reports: React.FC = () => {
                      query: 'S', 
                      oper: '=', 
                      rp: '2000', 
-                     sortname: 'usuarios_grupo.grupo', 
+                     sortname: 'usuarios_grupo.id', 
                      sortorder: 'asc' 
                  })
              });
@@ -215,6 +215,27 @@ export const Reports: React.FC = () => {
                  allGroups = res.registros;
              }
          } catch (e) { console.warn('Erro fetch grupos Ativo', e); }
+      }
+
+      // Tentativa D: Busca por Nome (LIKE %) - Último recurso
+      if (allGroups.length === 0) {
+         try {
+             const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
+                 method: 'POST',
+                 headers: config.headers,
+                 body: JSON.stringify({ 
+                     qtype: 'usuarios_grupo.grupo', 
+                     query: '%', 
+                     oper: 'LIKE', 
+                     rp: '2000', 
+                     sortname: 'usuarios_grupo.id', 
+                     sortorder: 'asc' 
+                 })
+             });
+             if (res.registros && Array.isArray(res.registros)) {
+                 allGroups = res.registros;
+             }
+         } catch (e) { console.warn('Erro fetch grupos Nome', e); }
       }
 
       const [allEmployees, allUsers] = await Promise.all([
@@ -232,7 +253,7 @@ export const Reports: React.FC = () => {
 
       // Checagem de Permissões Críticas
       if (allGroups.length === 0 && allUsers.length > 0) {
-          setPermissionWarning("Falha ao buscar Grupos. Tente liberar permissão na tabela 'usuarios_grupo'.");
+          setPermissionWarning("Aviso: 'usuarios_grupo' vazia. Exibindo apenas IDs.");
       } else {
           setPermissionWarning(null);
       }
@@ -652,7 +673,7 @@ export const Reports: React.FC = () => {
              {permissionWarning && (
                  <div className="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1" title={permissionWarning}>
                      <ShieldAlert size={10} /> 
-                     <span>Permissão necessária em <b>usuarios_grupo</b></span>
+                     <span>{permissionWarning}</span>
                  </div>
              )}
           </div>
