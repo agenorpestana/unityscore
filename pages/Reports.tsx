@@ -26,7 +26,7 @@ interface EmpInfo {
   name: string;
   functionName: string;
   functionId: string;
-  active: boolean; // Para critério de desempate
+  active: boolean; 
 }
 
 export const Reports: React.FC = () => {
@@ -49,9 +49,11 @@ export const Reports: React.FC = () => {
   });
 
   const [technicians, setTechnicians] = useState<(Technician & { role?: string })[]>([]);
+  
+  // Mapas de dados
   const [employeesMap, setEmployeesMap] = useState<Map<string, EmpInfo>>(new Map());
-  const [usersToEmployeeMap, setUsersToEmployeeMap] = useState<Map<string, string>>(new Map()); // id_login -> id_funcionario
-  const [nameToEmployeeMap, setNameToEmployeeMap] = useState<Map<string, EmpInfo>>(new Map()); // nome -> EmpInfo
+  const [usersToEmployeeMap, setUsersToEmployeeMap] = useState<Map<string, string>>(new Map()); // id_usuario -> id_funcionario
+  const [nameToEmployeeMap, setNameToEmployeeMap] = useState<Map<string, EmpInfo>>(new Map()); 
   
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
@@ -116,7 +118,7 @@ export const Reports: React.FC = () => {
       let allRecords: any[] = [];
       let page = 1;
       let hasMore = true;
-      const rp = 2000; // Tamanho de página aumentado para agilizar
+      const rp = 2000; 
 
       while (hasMore) {
           try {
@@ -178,11 +180,15 @@ export const Reports: React.FC = () => {
           } 
       });
 
-      // Mapear Usuários -> Funcionário
+      // Mapear Usuários -> Funcionário (A LIGAÇÃO CRÍTICA)
       const newUserToEmpMap = new Map<string, string>();
       allUsers.forEach((u: any) => {
-          if (u.id && u.funcionario && String(u.funcionario) !== '0') {
-              newUserToEmpMap.set(String(u.id), String(u.funcionario));
+          // Garante string para comparação segura
+          const userId = String(u.id);
+          const funcId = String(u.funcionario);
+          
+          if (userId && funcId && funcId !== '0' && funcId !== '') {
+              newUserToEmpMap.set(userId, funcId);
           }
       });
       setUsersToEmployeeMap(newUserToEmpMap);
@@ -205,7 +211,7 @@ export const Reports: React.FC = () => {
                   funcName = mapped;
               } else {
                   // Fallback: Se tem ID de função mas não achou o nome, mostra o ID
-                  funcName = `ID: ${funcId}`;
+                  funcName = `ID Função: ${funcId}`;
               }
           }
 
@@ -217,22 +223,20 @@ export const Reports: React.FC = () => {
               active: r.ativo === 'S'
           };
 
-          // Salva no mapa principal (ID -> Info)
+          // Salva no mapa principal (ID Funcionário -> Info)
           newEmployeesMap.set(String(r.id), empInfo);
 
-          // Salva no mapa de nomes (Nome -> Info), mas com inteligência para duplicatas
-          // Se houver dois funcionários "João", prioriza o que tem Função definida ou está Ativo.
+          // Salva no mapa de nomes para fallback
           const normalizedName = name.toLowerCase().trim();
           const existing = newNameMap.get(normalizedName);
           let shouldReplace = true;
 
           if (existing) {
-              const existingHasFunc = existing.functionName !== 'Sem Função' && !existing.functionName.startsWith('ID:');
-              const currentHasFunc = funcName !== 'Sem Função' && !funcName.startsWith('ID:');
+              const existingHasFunc = existing.functionName !== 'Sem Função' && !existing.functionName.startsWith('ID');
+              const currentHasFunc = funcName !== 'Sem Função' && !funcName.startsWith('ID');
               
               if (existingHasFunc && !currentHasFunc) shouldReplace = false;
               else if (existingHasFunc === currentHasFunc) {
-                  // Se ambos tem ou não função, prioriza o ativo
                   if (existing.active && !empInfo.active) shouldReplace = false;
               }
           }
@@ -243,7 +247,7 @@ export const Reports: React.FC = () => {
           
           if (r.ativo !== 'N') {
             combinedTechList.push({ id: String(r.id), name, role: funcName });
-            if (funcName !== 'Sem Função') {
+            if (funcName !== 'Sem Função' && !funcName.startsWith('ID')) {
                 usedRoles.add(funcName);
             }
           }
@@ -341,7 +345,6 @@ export const Reports: React.FC = () => {
 
       if (controller.signal.aborted) return;
 
-      // Busca OS em andamento para complementar se necessário
       const activePromise = filters.dateType === 'closing' ? safeFetch(url, {
         method: 'POST', headers: config.headers, 
         body: JSON.stringify({ qtype: 'su_oss_chamado.status', query: 'EN', oper: '=', rp: '200', sortname: 'su_oss_chamado.id', sortorder: 'desc' }),
@@ -360,55 +363,82 @@ export const Reports: React.FC = () => {
         uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
       }
 
-      // --- MAPEAMENTO INTELIGENTE E GULOSO (GREEDY) ---
-      // Tenta todas as possibilidades para encontrar uma função válida
+      // --- LOGICA DE RESOLUÇÃO DE FUNCIONÁRIO/FUNÇÃO ---
       const orders: (ServiceOrder & { technicianFunction?: string })[] = uniqueOrders.map((reg: any) => {
         let techName = reg.tecnico || 'OS SEM TÉCNICO';
         let functionName = 'Sem Função'; 
         
-        const techId = String(reg.id_tecnico); 
-        const loginId = String(reg.id_login);
+        // IDs Chave da OS
+        const osTechId = String(reg.id_tecnico); 
+        const osLoginId = String(reg.id_login);
 
         // Estratégia: Coletar candidatos de todas as fontes
         let candidateByTechId: EmpInfo | undefined;
         let candidateByLoginId: EmpInfo | undefined;
         let candidateByName: EmpInfo | undefined;
 
-        // 1. Busca pelo ID do Técnico
-        if (techId && techId !== '0') {
-            candidateByTechId = employeesMap.get(techId);
+        // 1. Busca pelo ID do Técnico Direto
+        if (osTechId && osTechId !== '0') {
+            candidateByTechId = employeesMap.get(osTechId);
         }
 
-        // 2. Busca pelo ID do Login (Usuário -> Funcionário)
-        if (loginId && loginId !== '0') {
-            const linkedEmpId = usersToEmployeeMap.get(loginId);
+        // 2. Busca pelo ID do Login (AQUI ESTÁ A LIGAÇÃO USUÁRIO -> FUNCIONÁRIO)
+        if (osLoginId && osLoginId !== '0') {
+            // Olha no mapa Usuarios -> Funcionarios
+            const linkedEmpId = usersToEmployeeMap.get(osLoginId);
             if (linkedEmpId) {
+                // Se achou o ID do funcionário, busca os dados dele
                 candidateByLoginId = employeesMap.get(linkedEmpId);
             }
         }
 
-        // 3. Busca pelo Nome
+        // 3. Busca pelo Nome (String Match)
         if (reg.tecnico) {
             candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
         }
 
-        // Decisão: Escolher o candidato que tenha a melhor informação (Função definida)
+        // --- DECISÃO DE QUEM USAR ---
+        // Priorizamos quem tem Função Definida
         let finalCandidate: EmpInfo | undefined = undefined;
+        let debugSource = '';
 
-        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função' && !c.functionName.startsWith('ID:');
+        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função' && !c.functionName.startsWith('ID');
 
-        if (hasFunc(candidateByTechId)) finalCandidate = candidateByTechId;
-        else if (hasFunc(candidateByLoginId)) finalCandidate = candidateByLoginId;
-        else if (hasFunc(candidateByName)) finalCandidate = candidateByName;
-        // Se nenhum tem função perfeita, pega qualquer um que exista na ordem de prioridade
-        else finalCandidate = candidateByTechId || candidateByLoginId || candidateByName;
+        // Prioridade 1: Login (Usuário) se tiver função (Resolve o caso ADEBIO)
+        if (hasFunc(candidateByLoginId)) {
+            finalCandidate = candidateByLoginId;
+            debugSource = 'Login';
+        }
+        // Prioridade 2: ID Técnico se tiver função
+        else if (hasFunc(candidateByTechId)) {
+            finalCandidate = candidateByTechId;
+            debugSource = 'ID';
+        }
+        // Prioridade 3: Nome se tiver função
+        else if (hasFunc(candidateByName)) {
+            finalCandidate = candidateByName;
+            debugSource = 'Nome';
+        }
+        // Fallback: Se ninguém tem função, pega o que estiver disponível na ordem
+        else {
+            finalCandidate = candidateByLoginId || candidateByTechId || candidateByName;
+        }
 
         if (finalCandidate) {
             techName = finalCandidate.name;
             functionName = finalCandidate.functionName;
+
+            // Debug: Se ainda assim estiver sem função, mostra os IDs para ajudar a corrigir o cadastro
+            if (functionName === 'Sem Função') {
+                const uLink = osLoginId !== '0' ? `U:${osLoginId}` : '';
+                const fLink = finalCandidate.id ? `F:${finalCandidate.id}` : '';
+                functionName = `${uLink}➡${fLink} (S/ Func)`;
+            }
+        } else {
+             // Caso extremo: Não achou nada
+             if (osLoginId !== '0') functionName = `Usuario ID: ${osLoginId} (Ñ Vinculado)`;
         }
 
-        // Recupera dados de datas
         const rawFinal = reg.data_final;
         const rawFechamento = reg.data_fechamento;
         let closingDate = 'EM ABERTO';
@@ -422,7 +452,7 @@ export const Reports: React.FC = () => {
            }
         }
 
-        const finalTechId = finalCandidate ? finalCandidate.id : techId;
+        const finalTechId = finalCandidate ? finalCandidate.id : osTechId;
 
         return {
           id: reg.id,
@@ -444,7 +474,7 @@ export const Reports: React.FC = () => {
       const filteredOrders = orders.filter(order => {
           const matchTech = filters.technicianId ? order.technicianId === filters.technicianId : true;
           const role = order.technicianFunction || 'Sem Função';
-          const matchFunc = filters.function ? role === filters.function : true;
+          const matchFunc = filters.function ? role.includes(filters.function) : true;
           let relevantDate = filters.dateType === 'closing' && order.closingDate !== 'EM ABERTO' ? order.closingDate.split(' ')[0] : order.openingDate.split(' ')[0];
           
           if (filters.dateType === 'closing' && order.closingDate === 'EM ABERTO') {
