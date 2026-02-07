@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Filter, FileText, Loader2, AlertTriangle, Printer, Database, Info } from 'lucide-react';
+import { Filter, FileText, Loader2, AlertTriangle, Printer, Database, Info, ShieldAlert } from 'lucide-react';
 import { Technician, Company, ServiceOrder, ScoreRule } from '../types';
 
 interface ReportFilter {
@@ -121,7 +121,6 @@ export const Reports: React.FC = () => {
     }
   };
 
-  // Helper para buscar TODOS os registros paginados (para cadastros)
   const fetchAllRecords = async (config: any, path: string, sortField: string) => {
       let allRecords: any[] = [];
       let page = 1;
@@ -170,15 +169,16 @@ export const Reports: React.FC = () => {
     if (!config) return;
 
     try {
-      // 1. Tentar buscar Funções com estratégia robusta
+      // 1. Tentar buscar Funções (Cargos de RH)
       let allFunctions = await fetchAllRecords(config, '/webservice/v1/fl_funcoes', 'fl_funcoes.id');
       if (allFunctions.length === 0) {
           const retryFunctions = await fetchAllRecords(config, '/webservice/v1/fl_funcoes', 'id');
           if (retryFunctions.length > 0) allFunctions = retryFunctions;
       }
 
-      // 2. Buscar Grupos de Usuários (NOVO)
+      // 2. Buscar Grupos de Usuários (NOVO - Tabela 'usuarios_grupo')
       let allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
+      // Tentativa de fallback se falhar com prefixo
       if (allGroups.length === 0) {
           const retryGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
           if (retryGroups.length > 0) allGroups = retryGroups;
@@ -197,11 +197,17 @@ export const Reports: React.FC = () => {
         loaded: true
       });
 
+      // Checagem de Permissões Críticas
+      if (allGroups.length === 0 && allUsers.length > 0) {
+          setPermissionWarning("Atenção: Tabela 'usuarios_grupo' vazia. Verifique permissões do token no IXC.");
+      } else {
+          setPermissionWarning(null);
+      }
+
       // Mapear Grupos (ID -> Nome)
       const newGroupsMap = new Map<string, string>();
       const groupNamesSet = new Set<string>();
       allGroups.forEach((g: any) => {
-          // IXC geralmente usa 'grupo' para o nome
           const name = g.grupo || g.nome || g.descricao;
           if (g.id && name) {
               newGroupsMap.set(String(g.id), name);
@@ -245,7 +251,6 @@ export const Reports: React.FC = () => {
       const newNameMap = new Map<string, EmpInfo>();
       const combinedTechList: (Technician & { role?: string })[] = [];
       
-      // Lista final de funções disponíveis para filtro (mistura Grupos e Cargos)
       const availableRolesSet = new Set<string>();
       groupNamesSet.forEach(g => availableRolesSet.add(g));
 
@@ -295,7 +300,7 @@ export const Reports: React.FC = () => {
       
     } catch (e: any) {
       console.error(e);
-      setError(`Falha ao carregar lista de técnicos/funções: ${e.message}`);
+      setError(`Falha ao carregar dados: ${e.message}`);
     }
   };
 
@@ -415,10 +420,14 @@ export const Reports: React.FC = () => {
             const groupId = userToGroupMap.get(osLoginId);
             if (groupId) {
                 const gName = groupsMap.get(groupId);
-                if (gName) groupNameFromUser = gName;
+                if (gName) {
+                    groupNameFromUser = gName;
+                } else {
+                    // Fallback Visual: Mostra o ID se não conseguiu traduzir (provável falta de permissão na tabela grupos)
+                    groupNameFromUser = `Grupo ID: ${groupId}`;
+                }
             }
 
-            // Também tenta achar o funcionário vinculado ao usuário
             const linkedEmpId = usersToEmployeeMap.get(osLoginId);
             if (linkedEmpId) candidateByLoginId = employeesMap.get(linkedEmpId);
         }
@@ -435,11 +444,9 @@ export const Reports: React.FC = () => {
 
         if (finalCandidate) {
             techName = finalCandidate.name;
-            // A Função do relatório agora prioriza o Grupo do Usuário (do Login da OS)
-            // Se não tiver grupo no login, tenta a função do cadastro de funcionário
+            // Prioriza o Grupo do Usuário, depois a Função do Funcionário
             functionName = groupNameFromUser || finalCandidate.functionName;
         } else {
-            // Se não achou funcionário, mas tem grupo no login, usa o grupo
             if (groupNameFromUser) functionName = groupNameFromUser;
             else if (osLoginId !== '0') functionName = `U:${osLoginId} (Ñ Vinculado)`;
         }
@@ -478,7 +485,8 @@ export const Reports: React.FC = () => {
       const filteredOrders = orders.filter(order => {
           const matchTech = filters.technicianId ? order.technicianId === filters.technicianId : true;
           const role = order.technicianFunction || 'Sem Função';
-          const matchFunc = filters.function ? role.includes(filters.function) : true;
+          // Permite busca parcial (ex: "Grupo ID: 4" bate com filtro "4")
+          const matchFunc = filters.function ? role.toLowerCase().includes(filters.function.toLowerCase()) : true;
           let relevantDate = filters.dateType === 'closing' && order.closingDate !== 'EM ABERTO' ? order.closingDate.split(' ')[0] : order.openingDate.split(' ')[0];
           
           if (filters.dateType === 'closing' && order.closingDate === 'EM ABERTO') {
@@ -589,8 +597,16 @@ export const Reports: React.FC = () => {
 
       <div className="flex justify-between items-center mb-6 no-print">
           <div><h2 className="text-2xl font-bold text-gray-800">Relatórios de Pontuação</h2><p className="text-gray-500">Gere relatórios sintéticos ou analíticos da performance da equipe.</p></div>
-          <div className={`text-xs flex items-center gap-1 font-medium ${dbStats.funcs === 0 && dbStats.loaded ? 'text-red-500' : 'text-gray-400'}`}>
-              <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.groups} Grupos
+          <div className="flex flex-col items-end gap-1">
+             <div className={`text-xs flex items-center gap-1 font-medium ${dbStats.groups === 0 && dbStats.loaded ? 'text-red-500' : 'text-gray-400'}`}>
+                 <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.groups} Grupos
+             </div>
+             {permissionWarning && (
+                 <div className="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1" title={permissionWarning}>
+                     <ShieldAlert size={10} /> 
+                     <span>Permissão necessária em <b>usuarios_grupo</b></span>
+                 </div>
+             )}
           </div>
       </div>
       
