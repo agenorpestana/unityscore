@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Filter, FileText, Loader2, AlertTriangle, Printer } from 'lucide-react';
+import { Filter, FileText, Loader2, AlertTriangle, Printer, Database } from 'lucide-react';
 import { Technician, Company, ServiceOrder, ScoreRule } from '../types';
 
 interface ReportFilter {
@@ -64,6 +64,9 @@ export const Reports: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [availableFunctions, setAvailableFunctions] = useState<string[]>([]);
   
+  // Debug stats
+  const [dbStats, setDbStats] = useState({ funcs: 0, emps: 0, users: 0 });
+
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const formatDateBR = (dateString: string | undefined | null) => {
@@ -118,7 +121,7 @@ export const Reports: React.FC = () => {
       let allRecords: any[] = [];
       let page = 1;
       let hasMore = true;
-      const rp = 2000; 
+      const rp = 1000; // Tamanho de página seguro
 
       while (hasMore) {
           try {
@@ -168,6 +171,12 @@ export const Reports: React.FC = () => {
          fetchAllRecords(config, '/webservice/v1/funcionarios', 'funcionarios.id'),
          fetchAllRecords(config, '/webservice/v1/usuarios', 'usuarios.id')
       ]);
+
+      setDbStats({
+        funcs: allFunctions.length,
+        emps: allEmployees.length,
+        users: allUsers.length
+      });
 
       // Mapear IDs de função para Nomes de função
       const newFunctionsMap = new Map<string, string>();
@@ -232,8 +241,8 @@ export const Reports: React.FC = () => {
           let shouldReplace = true;
 
           if (existing) {
-              const existingHasFunc = existing.functionName !== 'Sem Função' && !existing.functionName.startsWith('ID');
-              const currentHasFunc = funcName !== 'Sem Função' && !funcName.startsWith('ID');
+              const existingHasFunc = existing.functionName !== 'Sem Função';
+              const currentHasFunc = funcName !== 'Sem Função';
               
               if (existingHasFunc && !currentHasFunc) shouldReplace = false;
               else if (existingHasFunc === currentHasFunc) {
@@ -247,7 +256,7 @@ export const Reports: React.FC = () => {
           
           if (r.ativo !== 'N') {
             combinedTechList.push({ id: String(r.id), name, role: funcName });
-            if (funcName !== 'Sem Função' && !funcName.startsWith('ID')) {
+            if (funcName !== 'Sem Função') {
                 usedRoles.add(funcName);
             }
           }
@@ -398,28 +407,26 @@ export const Reports: React.FC = () => {
         }
 
         // --- DECISÃO DE QUEM USAR ---
-        // Priorizamos quem tem Função Definida
+        // Priorizamos quem tem Função Definida (Nome ou ID)
         let finalCandidate: EmpInfo | undefined = undefined;
-        let debugSource = '';
 
-        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função' && !c.functionName.startsWith('ID');
+        // Função auxiliar para verificar se o candidato tem algum cargo válido
+        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função';
 
-        // Prioridade 1: Login (Usuário) se tiver função (Resolve o caso ADEBIO)
+        // ORDEM DE PRIORIDADE:
+        // 1. Login (Usuário) se tiver função (Corrigindo caso onde Login aponta para funcionário correto)
         if (hasFunc(candidateByLoginId)) {
             finalCandidate = candidateByLoginId;
-            debugSource = 'Login';
         }
-        // Prioridade 2: ID Técnico se tiver função
+        // 2. ID Técnico se tiver função
         else if (hasFunc(candidateByTechId)) {
             finalCandidate = candidateByTechId;
-            debugSource = 'ID';
         }
-        // Prioridade 3: Nome se tiver função
+        // 3. Nome se tiver função
         else if (hasFunc(candidateByName)) {
             finalCandidate = candidateByName;
-            debugSource = 'Nome';
         }
-        // Fallback: Se ninguém tem função, pega o que estiver disponível na ordem
+        // 4. Fallback: Se ninguém tem função, usa Login ou Técnico mesmo assim
         else {
             finalCandidate = candidateByLoginId || candidateByTechId || candidateByName;
         }
@@ -428,15 +435,25 @@ export const Reports: React.FC = () => {
             techName = finalCandidate.name;
             functionName = finalCandidate.functionName;
 
-            // Debug: Se ainda assim estiver sem função, mostra os IDs para ajudar a corrigir o cadastro
+            // Debug visual: Se ainda estiver Sem Função, mostra os IDs rastreados para ajudar o admin
             if (functionName === 'Sem Função') {
+                 // Monta string de debug: U=UsuarioID -> F=FuncionarioID
                 const uLink = osLoginId !== '0' ? `U:${osLoginId}` : '';
                 const fLink = finalCandidate.id ? `F:${finalCandidate.id}` : '';
-                functionName = `${uLink}➡${fLink} (S/ Func)`;
+                
+                // Se veio pelo login e achou funcionário, mas sem função
+                if (candidateByLoginId && finalCandidate.id === candidateByLoginId.id) {
+                     functionName = `${uLink}➡${fLink} (S/ Cargo)`;
+                } else {
+                     functionName = `${fLink} (S/ Cargo)`;
+                }
             }
         } else {
-             // Caso extremo: Não achou nada
-             if (osLoginId !== '0') functionName = `Usuario ID: ${osLoginId} (Ñ Vinculado)`;
+             // Caso extremo: Não achou cadastro de funcionário algum
+             if (osLoginId !== '0') {
+                 // Tenta mostrar que existia um usuário, mas não vinculado
+                 functionName = `U:${osLoginId} (Ñ Vinculado)`;
+             }
         }
 
         const rawFinal = reg.data_final;
@@ -585,7 +602,10 @@ export const Reports: React.FC = () => {
         }
       `}</style>
 
-      <div className="flex justify-between items-center mb-6 no-print"><div><h2 className="text-2xl font-bold text-gray-800">Relatórios de Pontuação</h2><p className="text-gray-500">Gere relatórios sintéticos ou analíticos da performance da equipe.</p></div></div>
+      <div className="flex justify-between items-center mb-6 no-print">
+          <div><h2 className="text-2xl font-bold text-gray-800">Relatórios de Pontuação</h2><p className="text-gray-500">Gere relatórios sintéticos ou analíticos da performance da equipe.</p></div>
+          <div className="text-xs text-gray-400 flex items-center gap-1"><Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários</div>
+      </div>
       
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print"><h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><Filter size={20} className="text-brand-600" /> Filtros do Relatório</h3><div className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label><input type="date" value={filters.startDate} onChange={e => setFilters({...filters, startDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label><input type="date" value={filters.endDate} onChange={e => setFilters({...filters, endDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label><select value={filters.dateType} onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50"><option value="closing">Fechamento</option><option value="opening">Abertura</option></select></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Organizar por</label><select value={filters.sortBy} onChange={e => setFilters({...filters, sortBy: e.target.value as any})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="NAME">Nome do Técnico</option><option value="POINTS">Maior Pontuação</option></select></div></div><div className="space-y-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Técnico</label><select value={filters.technicianId} onChange={e => setFilters({...filters, technicianId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODOS OS TÉCNICOS</option>{technicians.map((t, idx) => (<option key={`${t.id}-${idx}`} value={t.id}>{t.name}</option>))}</select></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Função (Cargo)</label><select value={filters.function} onChange={e => setFilters({...filters, function: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODAS AS FUNÇÕES</option>{availableFunctions.map((f, i) => (<option key={i} value={f}>{f}</option>))}</select></div></div><div className="flex flex-col justify-between"><div><label className="block text-xs font-medium text-gray-500 mb-2">Tipo de Relatório</label><div className="flex items-center gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'SYNTHETIC'} onChange={() => setFilters({...filters, type: 'SYNTHETIC'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Sintético</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'ANALYTICAL'} onChange={() => setFilters({...filters, type: 'ANALYTICAL'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Analítico</span></label></div></div><button onClick={handleGenerate} disabled={isLoading} className="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70">{isLoading ? <><Loader2 className="animate-spin" size={18} /><span>{loadingProgress || 'Processando...'}</span></> : <><FileText size={18} /> GERAR RELATÓRIO</>}</button></div></div></div>
       {error && <div className="bg-red-50 text-red-700 p-4 rounded-lg flex items-center gap-2 border border-red-200"><AlertTriangle size={20} />{error}</div>}
