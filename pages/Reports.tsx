@@ -26,6 +26,7 @@ interface EmpInfo {
   name: string;
   functionName: string;
   functionId: string;
+  active: boolean; // Para critério de desempate
 }
 
 export const Reports: React.FC = () => {
@@ -115,7 +116,7 @@ export const Reports: React.FC = () => {
       let allRecords: any[] = [];
       let page = 1;
       let hasMore = true;
-      const rp = 1000; // Tamanho seguro de página
+      const rp = 2000; // Tamanho de página aumentado para agilizar
 
       while (hasMore) {
           try {
@@ -203,20 +204,42 @@ export const Reports: React.FC = () => {
               if (mapped) {
                   funcName = mapped;
               } else {
-                  // Fallback solicitado: Se não tiver nome, mostra o ID
+                  // Fallback: Se tem ID de função mas não achou o nome, mostra o ID
                   funcName = `ID: ${funcId}`;
               }
           }
 
-          const empInfo = { 
+          const empInfo: EmpInfo = { 
               id: String(r.id), 
               name, 
               functionName: funcName,
-              functionId: funcId ? String(funcId) : ''
+              functionId: funcId ? String(funcId) : '',
+              active: r.ativo === 'S'
           };
 
+          // Salva no mapa principal (ID -> Info)
           newEmployeesMap.set(String(r.id), empInfo);
-          newNameMap.set(name.toLowerCase().trim(), empInfo);
+
+          // Salva no mapa de nomes (Nome -> Info), mas com inteligência para duplicatas
+          // Se houver dois funcionários "João", prioriza o que tem Função definida ou está Ativo.
+          const normalizedName = name.toLowerCase().trim();
+          const existing = newNameMap.get(normalizedName);
+          let shouldReplace = true;
+
+          if (existing) {
+              const existingHasFunc = existing.functionName !== 'Sem Função' && !existing.functionName.startsWith('ID:');
+              const currentHasFunc = funcName !== 'Sem Função' && !funcName.startsWith('ID:');
+              
+              if (existingHasFunc && !currentHasFunc) shouldReplace = false;
+              else if (existingHasFunc === currentHasFunc) {
+                  // Se ambos tem ou não função, prioriza o ativo
+                  if (existing.active && !empInfo.active) shouldReplace = false;
+              }
+          }
+
+          if (shouldReplace) {
+              newNameMap.set(normalizedName, empInfo);
+          }
           
           if (r.ativo !== 'N') {
             combinedTechList.push({ id: String(r.id), name, role: funcName });
@@ -337,47 +360,55 @@ export const Reports: React.FC = () => {
         uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
       }
 
-      // --- MAPEAMENTO INTELIGENTE ---
+      // --- MAPEAMENTO INTELIGENTE E GULOSO (GREEDY) ---
+      // Tenta todas as possibilidades para encontrar uma função válida
       const orders: (ServiceOrder & { technicianFunction?: string })[] = uniqueOrders.map((reg: any) => {
         let techName = reg.tecnico || 'OS SEM TÉCNICO';
         let functionName = 'Sem Função'; 
-        let empInfo: EmpInfo | undefined;
-
+        
         const techId = String(reg.id_tecnico); 
         const loginId = String(reg.id_login);
 
-        // 1. Tentar achar funcionário pelo ID do Técnico na OS
+        // Estratégia: Coletar candidatos de todas as fontes
+        let candidateByTechId: EmpInfo | undefined;
+        let candidateByLoginId: EmpInfo | undefined;
+        let candidateByName: EmpInfo | undefined;
+
+        // 1. Busca pelo ID do Técnico
         if (techId && techId !== '0') {
-            empInfo = employeesMap.get(techId);
+            candidateByTechId = employeesMap.get(techId);
         }
 
-        // 2. Se não achou ou se o funcionário achado NÃO TEM FUNÇÃO, tenta pelo Usuário (Login)
-        // Isso resolve casos onde o id_tecnico está preenchido, mas o cadastro dele está incompleto,
-        // enquanto o id_login aponta para o usuário certo que tem vínculo com funcionário certo.
-        if ((!empInfo || empInfo.functionName === 'Sem Função') && loginId && loginId !== '0') {
+        // 2. Busca pelo ID do Login (Usuário -> Funcionário)
+        if (loginId && loginId !== '0') {
             const linkedEmpId = usersToEmployeeMap.get(loginId);
             if (linkedEmpId) {
-                const userEmpInfo = employeesMap.get(linkedEmpId);
-                // Só substitui se o funcionário via login tiver uma função válida
-                if (userEmpInfo && userEmpInfo.functionName !== 'Sem Função') {
-                    empInfo = userEmpInfo;
-                }
+                candidateByLoginId = employeesMap.get(linkedEmpId);
             }
         }
 
-        // 3. Fallback final: Tenta achar pelo Nome escrito na OS
-        if ((!empInfo || empInfo.functionName === 'Sem Função') && reg.tecnico) {
-            const nameMatch = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
-            if (nameMatch && nameMatch.functionName !== 'Sem Função') {
-                empInfo = nameMatch;
-            }
+        // 3. Busca pelo Nome
+        if (reg.tecnico) {
+            candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
         }
 
-        if (empInfo) {
-            techName = empInfo.name;
-            functionName = empInfo.functionName;
+        // Decisão: Escolher o candidato que tenha a melhor informação (Função definida)
+        let finalCandidate: EmpInfo | undefined = undefined;
+
+        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função' && !c.functionName.startsWith('ID:');
+
+        if (hasFunc(candidateByTechId)) finalCandidate = candidateByTechId;
+        else if (hasFunc(candidateByLoginId)) finalCandidate = candidateByLoginId;
+        else if (hasFunc(candidateByName)) finalCandidate = candidateByName;
+        // Se nenhum tem função perfeita, pega qualquer um que exista na ordem de prioridade
+        else finalCandidate = candidateByTechId || candidateByLoginId || candidateByName;
+
+        if (finalCandidate) {
+            techName = finalCandidate.name;
+            functionName = finalCandidate.functionName;
         }
 
+        // Recupera dados de datas
         const rawFinal = reg.data_final;
         const rawFechamento = reg.data_fechamento;
         let closingDate = 'EM ABERTO';
@@ -391,8 +422,7 @@ export const Reports: React.FC = () => {
            }
         }
 
-        // Usa o ID do funcionário encontrado (se houver) para agrupar corretamente
-        const finalTechId = empInfo ? empInfo.id : techId;
+        const finalTechId = finalCandidate ? finalCandidate.id : techId;
 
         return {
           id: reg.id,
