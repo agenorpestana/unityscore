@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
 import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap } from 'lucide-react';
 
@@ -44,6 +44,8 @@ export const TvDashboard: React.FC = () => {
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [isUpdating, setIsUpdating] = useState(false);
+  
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Helpers
   const getApiConfig = useCallback(() => {
@@ -54,6 +56,7 @@ export const TvDashboard: React.FC = () => {
     return {
       domain: '/api/ixc-proxy', 
       headers: { 'Content-Type': 'application/json', 'x-company-id': company.id },
+      id: company.id,
       name: company.name,
       logo: company.logoUrl
     };
@@ -62,9 +65,15 @@ export const TvDashboard: React.FC = () => {
   const buildUrl = (config: any, path: string) => `${config.domain}${path}`;
 
   const safeFetch = async (url: string, options: RequestInit) => {
-    const response = await fetch(url, options);
-    if (!response.ok) throw new Error('API Error');
-    return response.json();
+    try {
+        const response = await fetch(url, options);
+        if (!response.ok) throw new Error('API Error');
+        return response.json();
+    } catch (e: any) {
+        if (e.name === 'AbortError') throw e;
+        console.error("Fetch error:", e);
+        return { registros: [] };
+    }
   };
 
   const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
@@ -73,44 +82,70 @@ export const TvDashboard: React.FC = () => {
     
     // Lógica de Penalidade por Reabertura
     if (order.reopeningDate && order.reopeningDate !== '-') {
-        // Cálculo simples de dias para evitar timezone no Date object
-        // Usa apenas a parte da data YYYY-MM-DD
         const d1 = new Date(order.closingDate.split(' ')[0]);
         const d2 = new Date(order.reopeningDate.split(' ')[0]);
-        
-        // Diferença em dias
         const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
-        
-        // Se reaberto em até 30 dias, aplica penalidade (pontos negativos)
         if (diffDays <= 30) points = -Math.abs(points);
     }
     return points;
   };
 
   const loadData = async () => {
+    // Cancelar requisições anteriores
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsUpdating(true);
     const config = getApiConfig();
+    
     if (!config) {
         setIsUpdating(false);
+        setLoading(false);
+        setCompanyName('Configure a Empresa');
         return;
     }
     
-    // Loading inicial apenas
-    if (!companyName || companyName === 'Carregando...') setLoading(true);
-    
-    setCompanyName(config.name);
-    setLogoUrl(config.logo);
-
-    // 1. Load Rules
-    const savedRules = localStorage.getItem('unity_score_rules');
-    const rules = savedRules ? JSON.parse(savedRules) : {};
-    setScoreRules(rules);
-
     try {
-        // 2. Get ALL Active Employees
+        // --- 1. Garantir Dados da Empresa (Nome/Logo) ---
+        // Se faltar nome ou logo no cache, busca do backend
+        if (!config.name || !config.logo) {
+            try {
+                const compRes = await fetch(`/api/companies/${config.id}`, { signal: controller.signal });
+                if (compRes.ok) {
+                    const compData = await compRes.json();
+                    setCompanyName(compData.name || 'Empresa');
+                    setLogoUrl(compData.logoUrl);
+                    // Atualiza cache local silenciosamente para a próxima
+                    const currentCache = JSON.parse(localStorage.getItem('unity_company_data') || '{}');
+                    localStorage.setItem('unity_company_data', JSON.stringify({ ...currentCache, name: compData.name, logoUrl: compData.logoUrl }));
+                } else {
+                    setCompanyName(config.name || 'Empresa');
+                    setLogoUrl(config.logo);
+                }
+            } catch (e) {
+                 setCompanyName(config.name || 'Empresa');
+            }
+        } else {
+            setCompanyName(config.name);
+            setLogoUrl(config.logo);
+        }
+
+        // --- 2. Load Rules ---
+        let rules = scoreRules;
+        if (Object.keys(rules).length === 0) {
+            const savedRules = localStorage.getItem('unity_score_rules');
+            rules = savedRules ? JSON.parse(savedRules) : {};
+            setScoreRules(rules);
+        }
+
+        // --- 3. Get ALL Active Employees ---
         const empRes = await safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
              method: 'POST', headers: config.headers,
-             body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' })
+             body: JSON.stringify({ qtype: 'funcionarios.ativo', query: 'S', oper: '=', rp: '10000' }),
+             signal: controller.signal
         });
 
         const techEmployees = new Map<string, string>(); // ID -> Name
@@ -118,7 +153,7 @@ export const TvDashboard: React.FC = () => {
              techEmployees.set(String(e.id), e.funcionario || e.nome);
         });
 
-        // 3. Fetch OS Data (Last 3 Months to cover Rankings)
+        // --- 4. Fetch OS Data ---
         const now = new Date();
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(now.getMonth() - 3);
@@ -126,22 +161,22 @@ export const TvDashboard: React.FC = () => {
         
         const dateStr = threeMonthsAgo.toISOString().split('T')[0];
 
-        // Prepare Date Strings for precise Comparison (No Timezone issues)
+        // Prepare Date Strings
         const currentYear = now.getFullYear();
         const currentMonthStr = String(now.getMonth() + 1).padStart(2, '0');
         const currentDayStr = String(now.getDate()).padStart(2, '0');
-        const currentHour = now.getHours();
+        
+        const monthPrefix = `${currentYear}-${currentMonthStr}`; 
+        const todayPrefix = `${currentYear}-${currentMonthStr}-${currentDayStr}`;
 
-        // Prefixes for string matching (YYYY-MM and YYYY-MM-DD)
-        const monthPrefix = `${currentYear}-${currentMonthStr}`; // ex: "2024-05"
-        const todayPrefix = `${currentYear}-${currentMonthStr}-${currentDayStr}`; // ex: "2024-05-20"
-
-        // Fetch paginated
         let allOrders: any[] = [];
         let page = 1;
         let keepFetching = true;
         
-        while(keepFetching && page <= 100) { 
+        // Limite de segurança: 50 páginas (25k registros) para TV não travar
+        while(keepFetching && page <= 50) { 
+            if (controller.signal.aborted) break;
+
             const osRes = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
                 method: 'POST', headers: config.headers,
                 body: JSON.stringify({ 
@@ -149,22 +184,25 @@ export const TvDashboard: React.FC = () => {
                     query: dateStr, 
                     oper: '>=', 
                     page: String(page),
-                    rp: '500'
-                })
+                    rp: '500',
+                    sortname: 'su_oss_chamado.data_fechamento',
+                    sortorder: 'desc'
+                }),
+                signal: controller.signal
             });
             const batch = osRes.registros || [];
             if (batch.length === 0) break;
+            
             allOrders = [...allOrders, ...batch];
             if (batch.length < 500) keepFetching = false;
             page++;
         }
 
+        if (controller.signal.aborted) return;
+
         // Process Data
         const statsMonth: Record<string, { pts: number, count: number, name: string }> = {};
         const statsQuarter: Record<string, { pts: number, count: number, name: string }> = {};
-        
-        // Hourly Distribution Per Tech (Today Only)
-        // Map<TechID, Array[12]> -> 08h to 19h
         const hourlyStatsToday: Record<string, number[]> = {};
         const totalTodayPerTech: Record<string, number> = {};
 
@@ -174,19 +212,14 @@ export const TvDashboard: React.FC = () => {
 
             const techName = techEmployees.get(techId)!;
             
-            // Tratamento de Datas (Consistente com Reports.tsx)
             let closingDateStr = reg.data_fechamento;
             let reopeningDateStr = '-';
 
-            // Verifica Reabertura com tolerância de 5 minutos (300s)
             if (reg.data_fechamento && reg.data_fechamento !== '0000-00-00 00:00:00') {
                 if (reg.data_final && reg.data_final !== '0000-00-00 00:00:00') {
-                     // Calcula diferença em segundos
                      const dFechamento = new Date(reg.data_fechamento).getTime();
                      const dFinal = new Date(reg.data_final).getTime();
                      const diffSeconds = Math.abs(dFechamento - dFinal) / 1000;
-
-                     // Se diferença maior que 300s, considera como reabertura
                      if (diffSeconds > 300) {
                          closingDateStr = reg.data_final;
                          reopeningDateStr = reg.data_fechamento;
@@ -196,7 +229,6 @@ export const TvDashboard: React.FC = () => {
 
             if (!closingDateStr) return;
 
-            // Normalize Object
             const orderObj: ServiceOrder = {
                 id: reg.id,
                 technicianId: techId,
@@ -210,34 +242,31 @@ export const TvDashboard: React.FC = () => {
 
             const points = getPoints(orderObj, rules);
 
-            // Quarter Stats
+            // Quarter
             if (!statsQuarter[techId]) statsQuarter[techId] = { pts: 0, count: 0, name: techName };
             statsQuarter[techId].pts += points;
             statsQuarter[techId].count += 1;
 
-            // Current Month Stats (String Comparison)
+            // Month
             if (closingDateStr.startsWith(monthPrefix)) {
                 if (!statsMonth[techId]) statsMonth[techId] = { pts: 0, count: 0, name: techName };
                 statsMonth[techId].pts += points;
                 statsMonth[techId].count += 1;
             }
 
-            // HOURLY STATS (TODAY ONLY) - String Comparison
+            // Today Hourly
             if (closingDateStr.startsWith(todayPrefix)) {
-                // Parse Hour from String
-                const timePart = closingDateStr.split(' ')[1]; // "HH:mm:ss"
+                const timePart = closingDateStr.split(' ')[1]; 
                 const hourStr = timePart ? timePart.split(':')[0] : null;
                 
                 if (hourStr) {
                     const hour = parseInt(hourStr, 10);
-                    
                     if (!hourlyStatsToday[techId]) {
-                        hourlyStatsToday[techId] = new Array(12).fill(0); // 08h-19h
+                        hourlyStatsToday[techId] = new Array(12).fill(0); 
                         totalTodayPerTech[techId] = 0;
                     }
 
                     totalTodayPerTech[techId]++;
-
                     if (hour >= 8 && hour <= 19) {
                         const idx = hour - 8;
                         hourlyStatsToday[techId][idx]++;
@@ -246,37 +275,18 @@ export const TvDashboard: React.FC = () => {
             }
         });
 
-        // --- SORT & SET RANKINGS ---
-        
-        // 1. Top 3 Points Month
-        const rankMonth = Object.values(statsMonth)
-            .sort((a, b) => b.pts - a.pts)
-            .slice(0, 3)
-            .map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) }));
-        setTopMonth(rankMonth);
+        // Rankings
+        setTopMonth(Object.values(statsMonth).sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
+        setTopQuarter(Object.values(statsQuarter).sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
+        setTopOsMonth(Object.values(statsMonth).sort((a, b) => b.count - a.count).slice(0, 10).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
 
-        // 2. Top 3 Points Quarter
-        const rankQuarter = Object.values(statsQuarter)
-            .sort((a, b) => b.pts - a.pts)
-            .slice(0, 3)
-            .map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) }));
-        setTopQuarter(rankQuarter);
-
-        // 3. Top 10 OS Count Month
-        const rankOs = Object.values(statsMonth)
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 10)
-            .map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) }));
-        setTopOsMonth(rankOs);
-
-        // --- PROCESS LINE CHART DATA ---
-        
-        // Find top 5 techs of TODAY by volume
+        // Line Chart Data
         const top5TodayIds = Object.keys(totalTodayPerTech)
             .sort((a, b) => totalTodayPerTech[b] - totalTodayPerTech[a])
             .slice(0, 5);
         
         let calculatedMaxY = 0;
+        const currentHour = new Date().getHours();
 
         const linesData: TechnicianHourlyLine[] = top5TodayIds.map((id, index) => {
             const data = hourlyStatsToday[id];
@@ -285,8 +295,6 @@ export const TvDashboard: React.FC = () => {
 
             const fullName = techEmployees.get(id) || 'Unknown';
             const shortName = fullName.split(' ')[0];
-            
-            // Last active hour count (para o sparkline ou indicador)
             const currentHourIdx = Math.max(0, Math.min(currentHour - 8, 11));
             const lastCount = data[currentHourIdx] || 0;
 
@@ -300,32 +308,27 @@ export const TvDashboard: React.FC = () => {
             };
         });
 
-        // Se ninguém trabalhou hoje ainda, cria dados dummy zerados para 1 tecnico para não quebrar o layout
-        if (linesData.length === 0) {
-             setMaxHourlyVolume(5);
-        } else {
-             setMaxHourlyVolume(calculatedMaxY > 0 ? calculatedMaxY + 1 : 5);
-        }
-        
+        setMaxHourlyVolume(calculatedMaxY > 0 ? calculatedMaxY + 1 : 5);
         setHourlyLines(linesData);
         setLastUpdated(new Date().toLocaleTimeString('pt-BR'));
 
-    } catch (e) {
-        console.error(e);
+    } catch (e: any) {
+        if (e.name !== 'AbortError') console.error(e);
     } finally {
-        setLoading(false);
-        setIsUpdating(false);
+        if (abortControllerRef.current === controller) {
+             setLoading(false);
+             setIsUpdating(false);
+        }
     }
   };
 
   useEffect(() => {
     loadData();
-    // Atualiza a cada 30 segundos
     const interval = setInterval(loadData, 30000); 
     return () => clearInterval(interval);
   }, [getApiConfig]);
 
-  if (loading && !companyName) {
+  if (loading) {
       return (
           <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white">
               <Loader2 size={64} className="animate-spin text-brand-500 mb-4" />
@@ -334,33 +337,28 @@ export const TvDashboard: React.FC = () => {
       );
   }
 
-  // --- SVG CHART GENERATION HELPERS ---
+  // --- CHART HELPERS ---
   const hoursLabels = [8,9,10,11,12,13,14,15,16,17,18,19];
   const chartHeight = 250; 
   const chartWidth = 600;  
   const paddingX = 40;
   const paddingY = 30;
 
-  const getX = (index: number) => {
-      return paddingX + (index * ((chartWidth - (paddingX * 2)) / (hoursLabels.length - 1)));
-  };
-
+  const getX = (index: number) => paddingX + (index * ((chartWidth - (paddingX * 2)) / (hoursLabels.length - 1)));
   const getY = (value: number) => {
       const drawableHeight = chartHeight - (paddingY * 2);
-      const ratio = value / maxHourlyVolume;
+      const ratio = value / (maxHourlyVolume || 1);
       return (chartHeight - paddingY) - (ratio * drawableHeight);
   };
 
   const generatePath = (data: number[]) => {
-      // Se não tem dados, retorna linha no zero
       if(!data || data.length === 0) return `M ${paddingX},${chartHeight-paddingY} L ${chartWidth-paddingX},${chartHeight-paddingY}`;
-
-      // Smooth Curve (Catmull-Rom or Simple Cubic Bezier could be better, but sticking to straight lines for clarity on TV)
-      // Para TV, linhas retas são mais fáceis de ler o valor exato no ponto.
-      return data.map((val, idx) => 
-          `${idx === 0 ? 'M' : 'L'} ${getX(idx)},${getY(val)}`
-      ).join(' ');
+      return data.map((val, idx) => `${idx === 0 ? 'M' : 'L'} ${getX(idx)},${getY(val)}`).join(' ');
   };
+
+  // Safe Name Access
+  const safeCompanyName = companyName || 'Empresa';
+  const safeInitial = safeCompanyName.charAt(0) || '?';
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-6 overflow-hidden font-sans selection:bg-brand-500 selection:text-white">
@@ -371,11 +369,11 @@ export const TvDashboard: React.FC = () => {
                 {logoUrl ? (
                     <img src={logoUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
                 ) : (
-                    <span className="text-3xl font-bold text-slate-800">{companyName.charAt(0)}</span>
+                    <span className="text-3xl font-bold text-slate-800">{safeInitial}</span>
                 )}
              </div>
              <div>
-                 <h1 className="text-4xl font-black tracking-tight text-white mb-1">{companyName}</h1>
+                 <h1 className="text-4xl font-black tracking-tight text-white mb-1">{safeCompanyName}</h1>
                  <p className="text-slate-400 flex items-center gap-2 font-medium uppercase tracking-widest text-xs">
                     <Zap size={14} className="text-yellow-400" /> Performance em Tempo Real
                  </p>
@@ -453,10 +451,9 @@ export const TvDashboard: React.FC = () => {
           {/* Right Column: Analytics */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
-              {/* Hourly Evolution Line Chart (HOJE) - REDESIGNED */}
+              {/* Hourly Evolution Line Chart (HOJE) */}
               <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 h-[60%] flex flex-col relative overflow-hidden">
                   
-                  {/* Header do Gráfico */}
                   <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-10">
                     <h2 className="text-xl font-bold flex items-center gap-3 text-emerald-400 uppercase tracking-wider">
                         <Clock size={24} /> Produtividade Diária (Hoje)
@@ -468,7 +465,6 @@ export const TvDashboard: React.FC = () => {
                   </div>
                   
                   <div className="flex flex-1 overflow-hidden">
-                      {/* LADO ESQUERDO: GRÁFICO SVG */}
                       <div className="flex-[3] relative p-4 h-full">
                           {hourlyLines.length === 0 ? (
                               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
@@ -500,7 +496,6 @@ export const TvDashboard: React.FC = () => {
                                   {/* Data Lines */}
                                   {hourlyLines.map((line, idx) => (
                                       <g key={idx}>
-                                          {/* Glow Effect */}
                                           <path 
                                               d={generatePath(line.data)} 
                                               fill="none" 
@@ -510,7 +505,6 @@ export const TvDashboard: React.FC = () => {
                                               strokeLinecap="round"
                                               strokeLinejoin="round"
                                           />
-                                          {/* The Line */}
                                           <path 
                                               d={generatePath(line.data)} 
                                               fill="none" 
@@ -520,7 +514,6 @@ export const TvDashboard: React.FC = () => {
                                               strokeLinejoin="round"
                                               className="drop-shadow-md"
                                           />
-                                          {/* The Dots */}
                                           {line.data.map((val, dIdx) => (
                                               <circle 
                                                 key={dIdx} 
@@ -538,15 +531,11 @@ export const TvDashboard: React.FC = () => {
                           )}
                       </div>
 
-                      {/* LADO DIREITO: LEADERBOARD (LEGENDA GRANDE) */}
                       <div className="flex-[1] border-l border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-2 overflow-y-auto">
                           <h3 className="text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Líderes de Hoje</h3>
-                          {hourlyLines.length === 0 && <p className="text-slate-700 text-xs italic">Sem dados.</p>}
                           {hourlyLines.map((line, idx) => (
                               <div key={idx} className="flex items-center justify-between p-3 rounded-lg bg-slate-800 border border-slate-700 shadow-sm relative overflow-hidden group">
-                                  {/* Color Indicator Strip */}
                                   <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{backgroundColor: line.color}}></div>
-                                  
                                   <div className="pl-2">
                                       <div className="text-sm font-bold text-white truncate max-w-[100px]">{line.technicianName}</div>
                                       <div className="text-[10px] text-slate-400 font-mono">
