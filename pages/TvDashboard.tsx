@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap, Users, Filter } from 'lucide-react';
+import { Trophy, Medal, TrendingUp, CheckCircle, Loader2, Clock, Activity, Zap, Users, Filter, Calendar } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
   totalPoints: number;
   totalOrders: number;
   avatarLetter: string;
+  monthName?: string; // Para o Top Trimestre mensal
 }
 
 interface TechnicianHourlyLine {
@@ -48,7 +49,7 @@ export const TvDashboard: React.FC = () => {
 
   // Data States
   const [topMonth, setTopMonth] = useState<RankingItem[]>([]);
-  const [topQuarter, setTopQuarter] = useState<RankingItem[]>([]);
+  const [topQuarter, setTopQuarter] = useState<RankingItem[]>([]); // Agora guarda o campeão de cada mês
   const [topOsMonth, setTopOsMonth] = useState<RankingItem[]>([]);
   
   // New State for Line Chart
@@ -272,9 +273,12 @@ export const TvDashboard: React.FC = () => {
 
         // Process Data
         const statsMonth: Record<string, { pts: number, count: number, name: string }> = {};
-        const statsQuarter: Record<string, { pts: number, count: number, name: string }> = {};
         const hourlyStatsToday: Record<string, number[]> = {};
         const totalTodayPerTech: Record<string, number> = {};
+        
+        // Novo: Estatísticas mensais isoladas para o Top Trimestre
+        // Estrutura: { "2024-02": { "João": 500, "Maria": 400 }, "2024-01": ... }
+        const monthlyStats: Record<string, Record<string, number>> = {};
 
         allOrders.forEach((reg: any) => {
             // LÓGICA ROBUSTA DE IDENTIFICAÇÃO (Mesma do Reports.tsx)
@@ -355,14 +359,15 @@ export const TvDashboard: React.FC = () => {
             const points = getPoints(orderObj, rules);
 
             // Chave única para agregação
-            const uniqueKey = techName; // Agrega por nome para evitar duplicar se ID mudar
+            const uniqueKey = techName; 
 
-            // Quarter
-            if (!statsQuarter[uniqueKey]) statsQuarter[uniqueKey] = { pts: 0, count: 0, name: techName };
-            statsQuarter[uniqueKey].pts += points;
-            statsQuarter[uniqueKey].count += 1;
+            // --- Logica Top Trimestre (Por Mês) ---
+            const monthKey = closingDateStr.substring(0, 7); // "YYYY-MM"
+            if (!monthlyStats[monthKey]) monthlyStats[monthKey] = {};
+            if (!monthlyStats[monthKey][uniqueKey]) monthlyStats[monthKey][uniqueKey] = 0;
+            monthlyStats[monthKey][uniqueKey] += points;
 
-            // Month
+            // Month Stats (Agregado Mês Atual)
             if (closingDateStr.startsWith(monthPrefix)) {
                 if (!statsMonth[uniqueKey]) statsMonth[uniqueKey] = { pts: 0, count: 0, name: techName };
                 statsMonth[uniqueKey].pts += points;
@@ -391,8 +396,44 @@ export const TvDashboard: React.FC = () => {
         });
 
         // Rankings
+        
+        // 1. Top Month (Acumulado do mês atual)
         setTopMonth(Object.values(statsMonth).sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
-        setTopQuarter(Object.values(statsQuarter).sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
+        
+        // 2. Top Quarter (Campeão de cada um dos últimos 3 meses)
+        const sortedMonths = Object.keys(monthlyStats).sort().reverse().slice(0, 3); // ['2024-02', '2024-01', '2023-12']
+        const quarterlyChamps: RankingItem[] = [];
+        
+        sortedMonths.forEach(mKey => {
+             const techsInMonth = monthlyStats[mKey];
+             // Find Tech with max points in this month
+             let bestTech = '';
+             let maxPts = -999999;
+             
+             Object.entries(techsInMonth).forEach(([tName, pts]) => {
+                 if (pts > maxPts) {
+                     maxPts = pts;
+                     bestTech = tName;
+                 }
+             });
+
+             if (bestTech) {
+                 const [year, month] = mKey.split('-');
+                 const dateObj = new Date(parseInt(year), parseInt(month) - 1, 1);
+                 const monthName = dateObj.toLocaleString('pt-BR', { month: 'long' }).toUpperCase();
+                 
+                 quarterlyChamps.push({
+                     technicianName: bestTech,
+                     totalPoints: maxPts,
+                     totalOrders: 0, // Irrelevante aqui
+                     avatarLetter: bestTech.charAt(0),
+                     monthName: monthName
+                 });
+             }
+        });
+        setTopQuarter(quarterlyChamps);
+
+        // 3. Top OS Month (Volume)
         setTopOsMonth(Object.values(statsMonth).sort((a, b) => b.count - a.count).slice(0, 10).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
 
         // Line Chart Data
@@ -563,20 +604,23 @@ export const TvDashboard: React.FC = () => {
                   </div>
               </div>
 
-              {/* Card: Top 3 Quarter */}
+              {/* Card: Top 3 Quarter (NOW BY MONTH) */}
               <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex-1 relative overflow-hidden flex flex-col h-[400px] lg:h-[calc(50%-12px)]">
-                  <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Medal size={140} /></div>
+                  <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Calendar size={140} /></div>
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                       <Medal size={24} className="text-indigo-400" />
-                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Top Trimestre</h2>
+                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Top Últimos 3 Meses</h2>
                   </div>
                   
                   <div className="space-y-3 flex-1 overflow-y-auto pr-2">
                       {topQuarter.map((tech, idx) => (
                           <div key={idx} className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/30 border border-slate-800">
-                               <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center font-bold text-sm text-slate-300 shrink-0 border border-slate-600">{idx+1}</div>
-                               <div className="flex-1 truncate text-slate-200 font-medium">{tech.technicianName}</div>
-                               <div className="font-bold text-indigo-400 text-lg">{tech.totalPoints} <span className="text-[10px] text-indigo-600 font-normal">pts</span></div>
+                               <div className="w-20 font-bold text-xs uppercase text-slate-400 tracking-wide text-right shrink-0">{tech.monthName}</div>
+                               <div className="w-px h-8 bg-slate-700 mx-1"></div>
+                               <div className="flex-1 min-w-0">
+                                   <div className="truncate text-white font-bold text-lg">{tech.technicianName}</div>
+                               </div>
+                               <div className="font-bold text-indigo-400 text-xl">{tech.totalPoints} <span className="text-[10px] text-indigo-600 font-normal">pts</span></div>
                           </div>
                       ))}
                       {topQuarter.length === 0 && <p className="text-slate-600 text-center py-10 italic">Aguardando dados...</p>}
@@ -585,11 +629,37 @@ export const TvDashboard: React.FC = () => {
 
           </div>
 
-          {/* Right Column: Analytics */}
+          {/* Right Column: Analytics (SWAPPED) */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
-              {/* Hourly Evolution Line Chart (HOJE) */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(60%-12px)]">
+              {/* Top 10 Volume (MOVED UP - TALLER) */}
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(60%-12px)]">
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+                     <CheckCircle size={24} className="text-blue-400" />
+                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
+                  </div>
+                  
+                  <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-2 overflow-y-auto pr-2">
+                       {topOsMonth.map((tech, idx) => (
+                           <div key={idx} className="flex items-center justify-between border-b border-slate-800/50 py-2 group hover:bg-slate-800/30 rounded px-2 transition-colors">
+                               <div className="flex items-center gap-3 min-w-0">
+                                   <span className="text-slate-600 font-mono text-sm w-5 shrink-0 font-bold group-hover:text-slate-400">{idx+1}.</span>
+                                   <span className="text-slate-300 text-base font-medium truncate group-hover:text-white">{tech.technicianName}</span>
+                               </div>
+                               <div className="flex items-center gap-3 shrink-0">
+                                   <div className="h-2.5 w-16 md:w-32 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                                       <div className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{width: `${Math.min(tech.totalOrders * 1.5, 100)}%`}}></div>
+                                   </div>
+                                   <span className="text-white font-bold text-lg w-8 text-right">{tech.totalOrders}</span>
+                               </div>
+                           </div>
+                       ))}
+                       {topOsMonth.length === 0 && <p className="col-span-2 text-center text-slate-600 py-10">Aguardando dados de fechamento...</p>}
+                  </div>
+              </div>
+
+              {/* Hourly Evolution Line Chart (MOVED DOWN - SHORTER) */}
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(40%-12px)]">
                   
                   <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-10">
                     <h2 className="text-xl font-bold flex items-center gap-3 text-emerald-400 uppercase tracking-wider">
@@ -686,32 +756,6 @@ export const TvDashboard: React.FC = () => {
                               </div>
                           ))}
                       </div>
-                  </div>
-              </div>
-
-              {/* Top 10 Volume */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(40%-12px)]">
-                  <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
-                     <CheckCircle size={24} className="text-blue-400" />
-                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
-                  </div>
-                  
-                  <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-2 overflow-y-auto pr-2">
-                       {topOsMonth.map((tech, idx) => (
-                           <div key={idx} className="flex items-center justify-between border-b border-slate-800/50 py-2 group hover:bg-slate-800/30 rounded px-2 transition-colors">
-                               <div className="flex items-center gap-3 min-w-0">
-                                   <span className="text-slate-600 font-mono text-sm w-5 shrink-0 font-bold group-hover:text-slate-400">{idx+1}.</span>
-                                   <span className="text-slate-300 text-base font-medium truncate group-hover:text-white">{tech.technicianName}</span>
-                               </div>
-                               <div className="flex items-center gap-3 shrink-0">
-                                   <div className="h-2.5 w-16 md:w-32 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
-                                       <div className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{width: `${Math.min(tech.totalOrders * 1.5, 100)}%`}}></div>
-                                   </div>
-                                   <span className="text-white font-bold text-lg w-8 text-right">{tech.totalOrders}</span>
-                               </div>
-                           </div>
-                       ))}
-                       {topOsMonth.length === 0 && <p className="col-span-2 text-center text-slate-600 py-10">Aguardando dados de fechamento...</p>}
                   </div>
               </div>
 
