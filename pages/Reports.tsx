@@ -166,25 +166,43 @@ export const Reports: React.FC = () => {
       // Mapear Funcionários e associar sua função
       const newEmployeesMap = new Map<string, EmpInfo>();
       const combinedTechList: (Technician & { role?: string })[] = [];
+      const usedRoles = new Set<string>();
 
       if (empData.registros) {
         empData.registros.forEach((r: any) => {
           const name = r.funcionario || r.nome || `Func. ${r.id}`;
           
-          // Pega o nome da função baseada no ID salvo no funcionário
-          const funcName = newFunctionsMap.get(String(r.id_funcao)) || 'Sem Função';
+          // Lógica de fallback: Nome -> ID -> Sem Função
+          let funcName = 'Sem Função';
+          const funcId = r.id_funcao;
+
+          if (funcId && String(funcId) !== '0') {
+              const mapped = newFunctionsMap.get(String(funcId));
+              if (mapped) {
+                  funcName = mapped;
+              } else {
+                  // Fallback para ID se não achar o nome
+                  funcName = `ID: ${funcId}`;
+              }
+          }
 
           newEmployeesMap.set(String(r.id), { id: String(r.id), name, functionName: funcName });
           
           if (r.ativo !== 'N') {
             combinedTechList.push({ id: String(r.id), name, role: funcName });
+            if (funcName !== 'Sem Função') {
+                usedRoles.add(funcName);
+            }
           }
         });
       }
 
       setEmployeesMap(newEmployeesMap);
       setTechnicians(combinedTechList);
-      setAvailableFunctions(Array.from(functionNamesSet).sort()); 
+      
+      // Unir funções cadastradas com funções (IDs) encontradas nos funcionários para o filtro
+      const allFilters = new Set([...Array.from(functionNamesSet), ...Array.from(usedRoles)]);
+      setAvailableFunctions(Array.from(allFilters).sort()); 
       
     } catch (e: any) {
       console.error(e);
