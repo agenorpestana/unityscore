@@ -217,7 +217,7 @@ export const Reports: React.FC = () => {
          } catch (e) { console.warn('Erro fetch grupos Ativo', e); }
       }
 
-      // Tentativa D: Busca por Nome (LIKE %) - Último recurso
+      // Tentativa D: Busca por Nome (LIKE %)
       if (allGroups.length === 0) {
          try {
              const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
@@ -238,6 +238,27 @@ export const Reports: React.FC = () => {
          } catch (e) { console.warn('Erro fetch grupos Nome', e); }
       }
 
+      // Tentativa E: Payload identico ao Curl do usuário (Listar), com ordenação desc
+      if (allGroups.length === 0) {
+         try {
+             const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
+                 method: 'POST',
+                 headers: config.headers,
+                 body: JSON.stringify({ 
+                     qtype: 'usuarios_grupo.id', 
+                     query: '0', 
+                     oper: '>', 
+                     rp: '1000', 
+                     sortname: 'usuarios_grupo.id', 
+                     sortorder: 'desc' 
+                 })
+             });
+             if (res.registros && Array.isArray(res.registros)) {
+                 allGroups = res.registros;
+             }
+         } catch (e) { console.warn('Erro fetch grupos Curl style', e); }
+      }
+
       const [allEmployees, allUsers] = await Promise.all([
          fetchAllRecords(config, '/webservice/v1/funcionarios', 'funcionarios.id'),
          fetchAllRecords(config, '/webservice/v1/usuarios', 'usuarios.id')
@@ -251,16 +272,10 @@ export const Reports: React.FC = () => {
         loaded: true
       });
 
-      // Checagem de Permissões Críticas
-      if (allGroups.length === 0 && allUsers.length > 0) {
-          setPermissionWarning("Aviso: 'usuarios_grupo' vazia. Exibindo apenas IDs.");
-      } else {
-          setPermissionWarning(null);
-      }
-
       // Mapear Grupos (ID -> Nome)
       const newGroupsMap = new Map<string, string>();
       const groupNamesSet = new Set<string>();
+      
       allGroups.forEach((g: any) => {
           const name = g.grupo || g.nome || g.descricao;
           if (g.id && name) {
@@ -268,6 +283,35 @@ export const Reports: React.FC = () => {
               groupNamesSet.add(name);
           }
       });
+
+      // --- FALLBACK CRÍTICO: SE NÃO CARREGOU GRUPOS, USAR IDs DOS USUÁRIOS ---
+      // Se a tabela usuarios_grupo estiver inacessível, extraímos os IDs usados na tabela 'usuarios'
+      if (newGroupsMap.size === 0 && allUsers.length > 0) {
+          let recoveredCount = 0;
+          allUsers.forEach((u: any) => {
+              const gId = u.id_grupo ? String(u.id_grupo) : null;
+              if (gId && gId !== '0') {
+                  if (!newGroupsMap.has(gId)) {
+                      newGroupsMap.set(gId, `Grupo #${gId}`);
+                      groupNamesSet.add(`Grupo #${gId}`);
+                      recoveredCount++;
+                  }
+              }
+          });
+          
+          if (recoveredCount > 0) {
+              setPermissionWarning(`Aviso: Nomes não carregados. Usando ${recoveredCount} IDs de grupos encontrados.`);
+          } else {
+             if (allGroups.length === 0) {
+                setPermissionWarning("Aviso: Nenhum grupo encontrado (nem via usuários).");
+             } else {
+                setPermissionWarning(null);
+             }
+          }
+      } else {
+          setPermissionWarning(null);
+      }
+      
       setGroupsMap(newGroupsMap);
 
       // Mapear Funções de Funcionário (Backup)
@@ -483,7 +527,7 @@ export const Reports: React.FC = () => {
              const groupIdFromTech = empToGroupMap.get(osTechId);
              if (groupIdFromTech) {
                  const gName = groupsMap.get(groupIdFromTech);
-                 groupNameFound = gName || `Grupo ID: ${groupIdFromTech}`;
+                 groupNameFound = gName || `Grupo #${groupIdFromTech}`;
              }
         }
 
@@ -492,7 +536,7 @@ export const Reports: React.FC = () => {
             const groupId = userToGroupMap.get(osLoginId);
             if (groupId) {
                 const gName = groupsMap.get(groupId);
-                groupNameFound = gName || `Grupo ID: ${groupId}`;
+                groupNameFound = gName || `Grupo #${groupId}`;
             }
         }
 
