@@ -55,6 +55,10 @@ export const Reports: React.FC = () => {
   const [usersToEmployeeMap, setUsersToEmployeeMap] = useState<Map<string, string>>(new Map()); 
   const [nameToEmployeeMap, setNameToEmployeeMap] = useState<Map<string, EmpInfo>>(new Map()); 
   
+  // Novos mapas para Grupo de Usuário
+  const [groupsMap, setGroupsMap] = useState<Map<string, string>>(new Map()); // id_grupo -> nome_grupo
+  const [userToGroupMap, setUserToGroupMap] = useState<Map<string, string>>(new Map()); // id_usuario -> id_grupo
+
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [clientCache, setClientCache] = useState<Record<string, string>>({});
@@ -65,7 +69,7 @@ export const Reports: React.FC = () => {
   const [availableFunctions, setAvailableFunctions] = useState<string[]>([]);
   
   // Debug stats
-  const [dbStats, setDbStats] = useState({ funcs: 0, emps: 0, users: 0, loaded: false });
+  const [dbStats, setDbStats] = useState({ funcs: 0, emps: 0, users: 0, groups: 0, loaded: false });
   const [permissionWarning, setPermissionWarning] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -168,12 +172,16 @@ export const Reports: React.FC = () => {
     try {
       // 1. Tentar buscar Funções com estratégia robusta
       let allFunctions = await fetchAllRecords(config, '/webservice/v1/fl_funcoes', 'fl_funcoes.id');
-      
-      // Se falhar (retornar 0), tenta buscar sem prefixo na tabela (fallback)
       if (allFunctions.length === 0) {
-          console.warn("Retentando buscar funções sem prefixo de tabela...");
           const retryFunctions = await fetchAllRecords(config, '/webservice/v1/fl_funcoes', 'id');
           if (retryFunctions.length > 0) allFunctions = retryFunctions;
+      }
+
+      // 2. Buscar Grupos de Usuários (NOVO)
+      let allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
+      if (allGroups.length === 0) {
+          const retryGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
+          if (retryGroups.length > 0) allGroups = retryGroups;
       }
 
       const [allEmployees, allUsers] = await Promise.all([
@@ -185,45 +193,61 @@ export const Reports: React.FC = () => {
         funcs: allFunctions.length,
         emps: allEmployees.length,
         users: allUsers.length,
+        groups: allGroups.length,
         loaded: true
       });
 
-      // Checa permissão
-      if (allFunctions.length === 0) {
-          setPermissionWarning("A API não retornou nenhuma função. Verifique se o Token tem permissão para 'fl_funcoes'.");
-      } else {
-          setPermissionWarning(null);
-      }
+      // Mapear Grupos (ID -> Nome)
+      const newGroupsMap = new Map<string, string>();
+      const groupNamesSet = new Set<string>();
+      allGroups.forEach((g: any) => {
+          // IXC geralmente usa 'grupo' para o nome
+          const name = g.grupo || g.nome || g.descricao;
+          if (g.id && name) {
+              newGroupsMap.set(String(g.id), name);
+              groupNamesSet.add(name);
+          }
+      });
+      setGroupsMap(newGroupsMap);
 
-      // Mapear IDs de função para Nomes de função
+      // Mapear Funções de Funcionário (Backup)
       const newFunctionsMap = new Map<string, string>();
-      const functionNamesSet = new Set<string>();
-      
       allFunctions.forEach((f: any) => { 
-          // Tenta vários nomes de campo comuns
           const name = f.funcao || f.descricao || f.nome || f.cargo;
           if (f.id && name) { 
             newFunctionsMap.set(String(f.id), name); 
-            functionNamesSet.add(name); 
           } 
       });
 
-      // Mapear Usuários -> Funcionário
+      // Mapear Usuários -> Funcionário E Usuário -> Grupo
       const newUserToEmpMap = new Map<string, string>();
+      const newUserToGroupMap = new Map<string, string>();
+
       allUsers.forEach((u: any) => {
           const userId = String(u.id);
           const funcId = String(u.funcionario);
-          if (userId && funcId && funcId !== '0' && funcId !== '') {
-              newUserToEmpMap.set(userId, funcId);
+          const groupId = String(u.id_grupo);
+
+          if (userId) {
+              if (funcId && funcId !== '0' && funcId !== '') {
+                  newUserToEmpMap.set(userId, funcId);
+              }
+              if (groupId && groupId !== '0' && groupId !== '') {
+                  newUserToGroupMap.set(userId, groupId);
+              }
           }
       });
       setUsersToEmployeeMap(newUserToEmpMap);
+      setUserToGroupMap(newUserToGroupMap);
 
       // Mapear Funcionários
       const newEmployeesMap = new Map<string, EmpInfo>();
       const newNameMap = new Map<string, EmpInfo>();
       const combinedTechList: (Technician & { role?: string })[] = [];
-      const usedRoles = new Set<string>();
+      
+      // Lista final de funções disponíveis para filtro (mistura Grupos e Cargos)
+      const availableRolesSet = new Set<string>();
+      groupNamesSet.forEach(g => availableRolesSet.add(g));
 
       allEmployees.forEach((r: any) => {
           const name = r.funcionario || r.nome || `Func. ${r.id}`;
@@ -235,10 +259,7 @@ export const Reports: React.FC = () => {
               const mapped = newFunctionsMap.get(String(funcId));
               if (mapped) {
                   funcName = mapped;
-              } else {
-                  // Fallback: Se tem ID de função mas não achou o nome, mostra o ID
-                  // Isso acontece se a tabela fl_funcoes não for carregada
-                  funcName = `ID Função: ${funcId}`;
+                  availableRolesSet.add(mapped);
               }
           }
 
@@ -257,33 +278,20 @@ export const Reports: React.FC = () => {
           let shouldReplace = true;
 
           if (existing) {
-              const existingHasFunc = existing.functionName !== 'Sem Função' && !existing.functionName.startsWith('ID');
-              const currentHasFunc = funcName !== 'Sem Função' && !funcName.startsWith('ID');
-              
+              const existingHasFunc = existing.functionName !== 'Sem Função';
+              const currentHasFunc = funcName !== 'Sem Função';
               if (existingHasFunc && !currentHasFunc) shouldReplace = false;
-              else if (existingHasFunc === currentHasFunc) {
-                  if (existing.active && !empInfo.active) shouldReplace = false;
-              }
+              else if (existingHasFunc === currentHasFunc && existing.active && !empInfo.active) shouldReplace = false;
           }
 
-          if (shouldReplace) {
-              newNameMap.set(normalizedName, empInfo);
-          }
-          
-          if (r.ativo !== 'N') {
-            combinedTechList.push({ id: String(r.id), name, role: funcName });
-            if (funcName !== 'Sem Função') {
-                usedRoles.add(funcName);
-            }
-          }
+          if (shouldReplace) newNameMap.set(normalizedName, empInfo);
+          if (r.ativo !== 'N') combinedTechList.push({ id: String(r.id), name, role: funcName });
       });
 
       setEmployeesMap(newEmployeesMap);
       setNameToEmployeeMap(newNameMap);
       setTechnicians(combinedTechList);
-      
-      const allFilters = new Set([...Array.from(functionNamesSet), ...Array.from(usedRoles)]);
-      setAvailableFunctions(Array.from(allFilters).sort()); 
+      setAvailableFunctions(Array.from(availableRolesSet).sort()); 
       
     } catch (e: any) {
       console.error(e);
@@ -398,57 +406,42 @@ export const Reports: React.FC = () => {
         let candidateByTechId: EmpInfo | undefined;
         let candidateByLoginId: EmpInfo | undefined;
         let candidateByName: EmpInfo | undefined;
+        
+        // --- NOVA LÓGICA DE GRUPO ---
+        let groupNameFromUser: string | undefined;
 
-        if (osTechId && osTechId !== '0') {
-            candidateByTechId = employeesMap.get(osTechId);
-        }
-
+        // 1. Tentar pegar o Grupo do Usuário (Prioridade Máxima para Função)
         if (osLoginId && osLoginId !== '0') {
-            const linkedEmpId = usersToEmployeeMap.get(osLoginId);
-            if (linkedEmpId) {
-                candidateByLoginId = employeesMap.get(linkedEmpId);
+            const groupId = userToGroupMap.get(osLoginId);
+            if (groupId) {
+                const gName = groupsMap.get(groupId);
+                if (gName) groupNameFromUser = gName;
             }
+
+            // Também tenta achar o funcionário vinculado ao usuário
+            const linkedEmpId = usersToEmployeeMap.get(osLoginId);
+            if (linkedEmpId) candidateByLoginId = employeesMap.get(linkedEmpId);
         }
 
-        if (reg.tecnico) {
-            candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
-        }
+        if (osTechId && osTechId !== '0') candidateByTechId = employeesMap.get(osTechId);
+        if (reg.tecnico) candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
 
-        let finalCandidate: EmpInfo | undefined = undefined;
+        // --- DECISÃO DE QUEM É O TÉCNICO E QUAL A FUNÇÃO ---
+        let finalCandidate: EmpInfo | undefined;
 
-        const hasFunc = (c?: EmpInfo) => c && c.functionName !== 'Sem Função';
-
-        if (hasFunc(candidateByLoginId)) {
-            finalCandidate = candidateByLoginId;
-        }
-        else if (hasFunc(candidateByTechId)) {
-            finalCandidate = candidateByTechId;
-        }
-        else if (hasFunc(candidateByName)) {
-            finalCandidate = candidateByName;
-        }
-        else {
-            finalCandidate = candidateByLoginId || candidateByTechId || candidateByName;
-        }
+        if (candidateByLoginId) finalCandidate = candidateByLoginId;
+        else if (candidateByTechId) finalCandidate = candidateByTechId;
+        else finalCandidate = candidateByName;
 
         if (finalCandidate) {
             techName = finalCandidate.name;
-            functionName = finalCandidate.functionName;
-
-            if (functionName === 'Sem Função') {
-                const uLink = osLoginId !== '0' ? `U:${osLoginId}` : '';
-                const fLink = finalCandidate.id ? `F:${finalCandidate.id}` : '';
-                
-                if (candidateByLoginId && finalCandidate.id === candidateByLoginId.id) {
-                     functionName = `${uLink}➡${fLink} (S/ Cargo)`;
-                } else {
-                     functionName = `${fLink} (S/ Cargo)`;
-                }
-            }
+            // A Função do relatório agora prioriza o Grupo do Usuário (do Login da OS)
+            // Se não tiver grupo no login, tenta a função do cadastro de funcionário
+            functionName = groupNameFromUser || finalCandidate.functionName;
         } else {
-             if (osLoginId !== '0') {
-                 functionName = `U:${osLoginId} (Ñ Vinculado)`;
-             }
+            // Se não achou funcionário, mas tem grupo no login, usa o grupo
+            if (groupNameFromUser) functionName = groupNameFromUser;
+            else if (osLoginId !== '0') functionName = `U:${osLoginId} (Ñ Vinculado)`;
         }
 
         const rawFinal = reg.data_final;
@@ -597,11 +590,11 @@ export const Reports: React.FC = () => {
       <div className="flex justify-between items-center mb-6 no-print">
           <div><h2 className="text-2xl font-bold text-gray-800">Relatórios de Pontuação</h2><p className="text-gray-500">Gere relatórios sintéticos ou analíticos da performance da equipe.</p></div>
           <div className={`text-xs flex items-center gap-1 font-medium ${dbStats.funcs === 0 && dbStats.loaded ? 'text-red-500' : 'text-gray-400'}`}>
-              <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.funcs} Cargos
+              <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.groups} Grupos
           </div>
       </div>
       
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print"><h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><Filter size={20} className="text-brand-600" /> Filtros do Relatório</h3><div className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label><input type="date" value={filters.startDate} onChange={e => setFilters({...filters, startDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label><input type="date" value={filters.endDate} onChange={e => setFilters({...filters, endDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label><select value={filters.dateType} onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50"><option value="closing">Fechamento</option><option value="opening">Abertura</option></select></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Organizar por</label><select value={filters.sortBy} onChange={e => setFilters({...filters, sortBy: e.target.value as any})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="NAME">Nome do Técnico</option><option value="POINTS">Maior Pontuação</option></select></div></div><div className="space-y-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Técnico</label><select value={filters.technicianId} onChange={e => setFilters({...filters, technicianId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODOS OS TÉCNICOS</option>{technicians.map((t, idx) => (<option key={`${t.id}-${idx}`} value={t.id}>{t.name}</option>))}</select></div><div><label className="block text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">Função (Cargo) {permissionWarning && <span className="text-yellow-500 cursor-help" title={permissionWarning}><AlertTriangle size={12} /></span>}</label><select value={filters.function} onChange={e => setFilters({...filters, function: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODAS AS FUNÇÕES</option>{availableFunctions.map((f, i) => (<option key={i} value={f}>{f}</option>))}</select></div></div><div className="flex flex-col justify-between"><div><label className="block text-xs font-medium text-gray-500 mb-2">Tipo de Relatório</label><div className="flex items-center gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'SYNTHETIC'} onChange={() => setFilters({...filters, type: 'SYNTHETIC'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Sintético</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'ANALYTICAL'} onChange={() => setFilters({...filters, type: 'ANALYTICAL'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Analítico</span></label></div></div><button onClick={handleGenerate} disabled={isLoading} className="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70">{isLoading ? <><Loader2 className="animate-spin" size={18} /><span>{loadingProgress || 'Processando...'}</span></> : <><FileText size={18} /> GERAR RELATÓRIO</>}</button></div></div></div>
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print"><h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><Filter size={20} className="text-brand-600" /> Filtros do Relatório</h3><div className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label><input type="date" value={filters.startDate} onChange={e => setFilters({...filters, startDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label><input type="date" value={filters.endDate} onChange={e => setFilters({...filters, endDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label><select value={filters.dateType} onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50"><option value="closing">Fechamento</option><option value="opening">Abertura</option></select></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Organizar por</label><select value={filters.sortBy} onChange={e => setFilters({...filters, sortBy: e.target.value as any})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="NAME">Nome do Técnico</option><option value="POINTS">Maior Pontuação</option></select></div></div><div className="space-y-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Técnico</label><select value={filters.technicianId} onChange={e => setFilters({...filters, technicianId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODOS OS TÉCNICOS</option>{technicians.map((t, idx) => (<option key={`${t.id}-${idx}`} value={t.id}>{t.name}</option>))}</select></div><div><label className="block text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">Função (Grupo/Cargo) {permissionWarning && <span className="text-yellow-500 cursor-help" title={permissionWarning}><AlertTriangle size={12} /></span>}</label><select value={filters.function} onChange={e => setFilters({...filters, function: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODAS AS FUNÇÕES</option>{availableFunctions.map((f, i) => (<option key={i} value={f}>{f}</option>))}</select></div></div><div className="flex flex-col justify-between"><div><label className="block text-xs font-medium text-gray-500 mb-2">Tipo de Relatório</label><div className="flex items-center gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'SYNTHETIC'} onChange={() => setFilters({...filters, type: 'SYNTHETIC'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Sintético</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'ANALYTICAL'} onChange={() => setFilters({...filters, type: 'ANALYTICAL'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Analítico</span></label></div></div><button onClick={handleGenerate} disabled={isLoading} className="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70">{isLoading ? <><Loader2 className="animate-spin" size={18} /><span>{loadingProgress || 'Processando...'}</span></> : <><FileText size={18} /> GERAR RELATÓRIO</>}</button></div></div></div>
       {error && <div className="bg-red-50 text-red-700 p-4 rounded-lg flex items-center gap-2 border border-red-200"><AlertTriangle size={20} />{error}</div>}
       {reportData && (
         <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
