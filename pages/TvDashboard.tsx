@@ -227,7 +227,7 @@ export const TvDashboard: React.FC = () => {
         // --- 4. Fetch OS Data ---
         const now = new Date();
         const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(now.getMonth() - 3);
+        threeMonthsAgo.setMonth(now.getMonth() - 4); // Busca um mês a mais para garantir cobertura dos últimos 3 fechados
         threeMonthsAgo.setDate(1); 
         
         const dateStr = threeMonthsAgo.toISOString().split('T')[0];
@@ -400,37 +400,47 @@ export const TvDashboard: React.FC = () => {
         // 1. Top Month (Acumulado do mês atual)
         setTopMonth(Object.values(statsMonth).sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
         
-        // 2. Top Quarter (Campeão de cada um dos últimos 3 meses)
-        const sortedMonths = Object.keys(monthlyStats).sort().reverse().slice(0, 3); // ['2024-02', '2024-01', '2023-12']
+        // 2. Top Quarter (Campeão de cada um dos últimos 3 meses ANTERIORES)
         const quarterlyChamps: RankingItem[] = [];
         
-        sortedMonths.forEach(mKey => {
-             const techsInMonth = monthlyStats[mKey];
-             // Find Tech with max points in this month
-             let bestTech = '';
-             let maxPts = -999999;
-             
-             Object.entries(techsInMonth).forEach(([tName, pts]) => {
-                 if (pts > maxPts) {
-                     maxPts = pts;
-                     bestTech = tName;
-                 }
-             });
-
-             if (bestTech) {
-                 const [year, month] = mKey.split('-');
-                 const dateObj = new Date(parseInt(year), parseInt(month) - 1, 1);
-                 const monthName = dateObj.toLocaleString('pt-BR', { month: 'long' }).toUpperCase();
+        // Loop pelos 3 meses anteriores
+        for (let i = 1; i <= 3; i++) {
+            // Se hoje é 15/02/2024:
+            // i=1 -> 15/01/2024 (Jan)
+            // i=2 -> 15/12/2023 (Dez)
+            // i=3 -> 15/11/2023 (Nov)
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const mKey = `${y}-${m}`;
+            
+            const techsInMonth = monthlyStats[mKey];
+            
+            if (techsInMonth) {
+                 // Find Tech with max points in this specific month
+                 let bestTech = '';
+                 let maxPts = -999999;
                  
-                 quarterlyChamps.push({
-                     technicianName: bestTech,
-                     totalPoints: maxPts,
-                     totalOrders: 0, // Irrelevante aqui
-                     avatarLetter: bestTech.charAt(0),
-                     monthName: monthName
+                 Object.entries(techsInMonth).forEach(([tName, pts]) => {
+                     if (pts > maxPts) {
+                         maxPts = pts;
+                         bestTech = tName;
+                     }
                  });
-             }
-        });
+
+                 if (bestTech) {
+                     const monthName = d.toLocaleString('pt-BR', { month: 'long' }).toUpperCase();
+                     
+                     quarterlyChamps.push({
+                         technicianName: bestTech,
+                         totalPoints: maxPts,
+                         totalOrders: 0, // Irrelevante aqui
+                         avatarLetter: bestTech.charAt(0),
+                         monthName: monthName
+                     });
+                 }
+            }
+        }
         setTopQuarter(quarterlyChamps);
 
         // 3. Top OS Month (Volume)
@@ -604,7 +614,7 @@ export const TvDashboard: React.FC = () => {
                   </div>
               </div>
 
-              {/* Card: Top 3 Quarter (NOW BY MONTH) */}
+              {/* Card: Top 3 Quarter (NOW BY MONTH - PREVIOUS 3) */}
               <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex-1 relative overflow-hidden flex flex-col h-[400px] lg:h-[calc(50%-12px)]">
                   <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Calendar size={140} /></div>
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
@@ -632,8 +642,8 @@ export const TvDashboard: React.FC = () => {
           {/* Right Column: Analytics (SWAPPED) */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
-              {/* Top 10 Volume (MOVED UP - TALLER) */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(60%-12px)]">
+              {/* Top 10 Volume (MOVED UP - SAME HEIGHT AS BOTTOM) */}
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(50%-12px)]">
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                      <CheckCircle size={24} className="text-blue-400" />
                      <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
@@ -658,8 +668,8 @@ export const TvDashboard: React.FC = () => {
                   </div>
               </div>
 
-              {/* Hourly Evolution Line Chart (MOVED DOWN - SHORTER) */}
-              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(40%-12px)]">
+              {/* Hourly Evolution Line Chart (MOVED DOWN - SAME HEIGHT AS TOP) */}
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-0 flex flex-col relative overflow-hidden h-[400px] lg:h-[calc(50%-12px)]">
                   
                   <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-10">
                     <h2 className="text-xl font-bold flex items-center gap-3 text-emerald-400 uppercase tracking-wider">
