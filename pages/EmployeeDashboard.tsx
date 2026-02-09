@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Company, ScoreRule, ServiceOrder } from '../types';
-import { CheckCircle, Loader2, Trophy, RefreshCw } from 'lucide-react';
+import { CheckCircle, Loader2, RefreshCw } from 'lucide-react';
 
 interface RankingItem {
   technicianName: string;
@@ -264,59 +264,44 @@ export const EmployeeDashboard: React.FC = () => {
   // Max points for bar calculation
   const maxPoints = ranking.length > 0 ? ranking[0].totalPoints : 1;
 
-  // Split into columns for alternating layout (Odd Left, Even Right)
-  const leftCol = ranking.filter((_, i) => i % 2 === 0);
-  const rightCol = ranking.filter((_, i) => i % 2 !== 0);
-
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="space-y-6 animate-in fade-in duration-500 pb-20 md:pb-0">
       <header className="flex justify-between items-end">
         <div>
-            <h1 className="text-3xl font-bold text-gray-900">Meu Desempenho</h1>
-            <p className="text-gray-500 mt-1">Acompanhe o ranking de pontuação mensal (Suporte Campo).</p>
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Meu Desempenho</h1>
+            <p className="text-sm md:text-base text-gray-500 mt-1">Acompanhe o ranking de pontuação mensal.</p>
         </div>
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-            <span>Atualizado: {lastUpdated}</span>
+        <div className="flex items-center gap-2 text-xs md:text-sm text-gray-500">
+            <span className="hidden md:inline">Atualizado:</span>
+            <span>{lastUpdated}</span>
             <button onClick={loadData} className="p-1 hover:bg-gray-200 rounded-full transition-colors"><RefreshCw size={14} /></button>
         </div>
       </header>
 
       {/* Dark Theme Card Matching the Image */}
-      <div className="bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl p-6 md:p-8">
-        <div className="flex items-center gap-3 mb-8 border-b border-slate-800 pb-4">
-            <CheckCircle size={28} className="text-blue-500" />
-            <h2 className="text-2xl font-bold text-white uppercase tracking-wider">Top 10 Pontuação Mensal</h2>
+      <div className="bg-slate-950 rounded-xl md:rounded-2xl border border-slate-800 shadow-2xl p-4 md:p-8">
+        <div className="flex items-center gap-3 mb-6 md:mb-8 border-b border-slate-800 pb-4">
+            <CheckCircle size={24} className="text-blue-500 md:w-7 md:h-7" />
+            <h2 className="text-xl md:text-2xl font-bold text-white uppercase tracking-wider">Top 10 Mensal</h2>
         </div>
 
         {loading ? (
              <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-                 <Loader2 size={48} className="animate-spin mb-4 text-blue-500" />
-                 <p>Carregando ranking...</p>
+                 <Loader2 size={40} className="animate-spin mb-4 text-blue-500" />
+                 <p className="text-sm">Carregando ranking...</p>
              </div>
         ) : ranking.length === 0 ? (
-             <div className="py-20 text-center text-slate-500 italic">Nenhum dado de pontuação encontrado para Suporte Campo neste mês.</div>
+             <div className="py-20 text-center text-slate-500 italic text-sm">Nenhum dado encontrado para Suporte Campo.</div>
         ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-12 gap-y-2">
-                
-                {/* Columns Wrapper to simulate the layout */}
-                <div className="space-y-4">
-                    {leftCol.map((tech, idx) => {
-                        const globalRank = idx * 2 + 1; // 1, 3, 5...
-                        return (
-                            <RankingRow key={tech.technicianName} tech={tech} rank={globalRank} maxPoints={maxPoints} />
-                        );
-                    })}
-                </div>
-
-                <div className="space-y-4">
-                    {rightCol.map((tech, idx) => {
-                        const globalRank = idx * 2 + 2; // 2, 4, 6...
-                        return (
-                             <RankingRow key={tech.technicianName} tech={tech} rank={globalRank} maxPoints={maxPoints} />
-                        );
-                    })}
-                </div>
-
+                {ranking.map((tech, idx) => (
+                    <RankingRow 
+                        key={tech.technicianName} 
+                        tech={tech} 
+                        rank={idx + 1} 
+                        maxPoints={maxPoints} 
+                    />
+                ))}
             </div>
         )}
       </div>
@@ -326,21 +311,22 @@ export const EmployeeDashboard: React.FC = () => {
 
 const RankingRow: React.FC<{ tech: RankingItem, rank: number, maxPoints: number }> = ({ tech, rank, maxPoints }) => (
     <div className="flex items-center justify-between py-3 group hover:bg-slate-900/50 rounded-lg px-2 transition-colors border-b border-slate-900/50">
-        <div className="flex items-center gap-4 min-w-0 flex-1">
-            <span className="text-slate-500 font-mono text-lg w-6 shrink-0 font-bold group-hover:text-slate-400">{rank}.</span>
-            <span className="text-slate-200 text-base font-bold truncate group-hover:text-white uppercase tracking-tight">{tech.technicianName}</span>
+        <div className="flex items-center gap-3 md:gap-4 min-w-0 flex-1">
+            <span className="text-slate-500 font-mono text-base md:text-lg w-5 md:w-6 shrink-0 font-bold group-hover:text-slate-400">{rank}.</span>
+            <span className="text-slate-200 text-sm md:text-base font-bold truncate group-hover:text-white uppercase tracking-tight">{tech.technicianName}</span>
         </div>
         
-        <div className="flex items-center gap-4 shrink-0 w-[45%] justify-end">
+        {/* Adjusted width for mobile to prevent squishing text */}
+        <div className="flex items-center gap-2 md:gap-4 shrink-0 w-auto sm:w-[45%] justify-end pl-2">
             <div className="flex-1 h-3 bg-slate-800 rounded-full overflow-hidden border border-slate-700 hidden sm:block">
                 <div 
                     className="h-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.6)] rounded-r-full transition-all duration-1000" 
                     style={{width: `${Math.min((tech.totalPoints / maxPoints) * 100, 100)}%`}}
                 ></div>
             </div>
-            <div className="flex flex-col items-end min-w-[80px]">
-                <span className="text-white font-bold text-xl leading-none tracking-tight">{tech.totalPoints}</span>
-                <span className="text-[10px] text-slate-500 uppercase font-semibold mt-1">{tech.totalOrders} OS Fechadas</span>
+            <div className="flex flex-col items-end min-w-[70px] md:min-w-[80px]">
+                <span className="text-white font-bold text-lg md:text-xl leading-none tracking-tight">{tech.totalPoints}</span>
+                <span className="text-[9px] md:text-[10px] text-slate-500 uppercase font-semibold mt-0.5 md:mt-1">{tech.totalOrders} OS Fechadas</span>
             </div>
         </div>
     </div>
