@@ -226,11 +226,11 @@ export const TvDashboard: React.FC = () => {
 
         // --- 4. Fetch OS Data ---
         const now = new Date();
-        const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(now.getMonth() - 4); // Busca um mês a mais para garantir cobertura dos últimos 3 fechados
-        threeMonthsAgo.setDate(1); 
+        const fourMonthsAgo = new Date();
+        fourMonthsAgo.setMonth(now.getMonth() - 4); // Busca um mês a mais para garantir cobertura dos últimos 3 fechados
+        fourMonthsAgo.setDate(1); 
         
-        const dateStr = threeMonthsAgo.toISOString().split('T')[0];
+        const dateStr = fourMonthsAgo.toISOString().split('T')[0];
 
         // Prepare Date Strings
         const currentYear = now.getFullYear();
@@ -403,12 +403,12 @@ export const TvDashboard: React.FC = () => {
         // 2. Top Quarter (Campeão de cada um dos últimos 3 meses ANTERIORES)
         const quarterlyChamps: RankingItem[] = [];
         
-        // Loop pelos 3 meses anteriores
+        // Loop pelos 3 meses anteriores (Ignora Mês Atual)
+        // Se hoje é Fev/2024:
+        // i=1 -> Jan/2024
+        // i=2 -> Dez/2023
+        // i=3 -> Nov/2023
         for (let i = 1; i <= 3; i++) {
-            // Se hoje é 15/02/2024:
-            // i=1 -> 15/01/2024 (Jan)
-            // i=2 -> 15/12/2023 (Dez)
-            // i=3 -> 15/11/2023 (Nov)
             const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
             const y = d.getFullYear();
             const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -443,8 +443,19 @@ export const TvDashboard: React.FC = () => {
         }
         setTopQuarter(quarterlyChamps);
 
-        // 3. Top OS Month (Volume)
-        setTopOsMonth(Object.values(statsMonth).sort((a, b) => b.count - a.count).slice(0, 10).map(x => ({ technicianName: x.name, totalPoints: x.pts, totalOrders: x.count, avatarLetter: x.name.charAt(0) })));
+        // 3. Top 10 Pontuação Mensal (Ordenado por PONTOS)
+        // Antigo Top OS Month
+        const top10ByPoints = Object.values(statsMonth)
+            .sort((a, b) => b.pts - a.pts) // Ordena por PONTOS
+            .slice(0, 10)
+            .map(x => ({ 
+                technicianName: x.name, 
+                totalPoints: x.pts, 
+                totalOrders: x.count, 
+                avatarLetter: x.name.charAt(0) 
+            }));
+            
+        setTopOsMonth(top10ByPoints);
 
         // Line Chart Data
         const top5TodayIds = Object.keys(totalTodayPerTech)
@@ -525,6 +536,9 @@ export const TvDashboard: React.FC = () => {
   const safeCompanyName = companyName || 'Empresa';
   const safeInitial = safeCompanyName.charAt(0) || '?';
   const currentViewLabel = viewMode === 'ALL' ? 'Todos os Setores' : (KNOWN_GROUPS[viewMode] || `Grupo ${viewMode}`);
+
+  // Max points for bar calculation
+  const maxPointsInTop10 = topOsMonth.length > 0 ? topOsMonth[0].totalPoints : 1;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-4 lg:p-6 overflow-y-auto font-sans selection:bg-brand-500 selection:text-white pb-20">
@@ -642,25 +656,28 @@ export const TvDashboard: React.FC = () => {
           {/* Right Column: Analytics (SWAPPED) */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-6 h-full">
               
-              {/* Top 10 Volume (MOVED UP - SAME HEIGHT AS BOTTOM) */}
+              {/* Top 10 Pontuação (MOVED UP - SAME HEIGHT AS BOTTOM) */}
               <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl p-5 flex flex-col h-[400px] lg:h-[calc(50%-12px)]">
                   <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
                      <CheckCircle size={24} className="text-blue-400" />
-                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Volume Mensal (Top 10)</h2>
+                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Top 10 Pontuação Mensal</h2>
                   </div>
                   
                   <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-2 overflow-y-auto pr-2">
                        {topOsMonth.map((tech, idx) => (
                            <div key={idx} className="flex items-center justify-between border-b border-slate-800/50 py-2 group hover:bg-slate-800/30 rounded px-2 transition-colors">
-                               <div className="flex items-center gap-3 min-w-0">
+                               <div className="flex items-center gap-3 min-w-0 flex-1">
                                    <span className="text-slate-600 font-mono text-sm w-5 shrink-0 font-bold group-hover:text-slate-400">{idx+1}.</span>
                                    <span className="text-slate-300 text-base font-medium truncate group-hover:text-white">{tech.technicianName}</span>
                                </div>
-                               <div className="flex items-center gap-3 shrink-0">
-                                   <div className="h-2.5 w-16 md:w-32 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
-                                       <div className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{width: `${Math.min(tech.totalOrders * 1.5, 100)}%`}}></div>
+                               <div className="flex items-center gap-3 shrink-0 w-1/2 justify-end">
+                                   <div className="flex-1 h-2.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700 mx-2 hidden sm:block">
+                                       <div className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{width: `${Math.min((tech.totalPoints / (maxPointsInTop10 || 1)) * 100, 100)}%`}}></div>
                                    </div>
-                                   <span className="text-white font-bold text-lg w-8 text-right">{tech.totalOrders}</span>
+                                   <div className="flex flex-col items-end">
+                                        <span className="text-white font-bold text-lg leading-none">{tech.totalPoints}</span>
+                                        <span className="text-[10px] text-slate-500 uppercase">{tech.totalOrders} OS Fechadas</span>
+                                   </div>
                                </div>
                            </div>
                        ))}
