@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, Users, Settings, LogOut, Network, Trophy, FileText, MonitorPlay } from 'lucide-react';
+import { User } from '../types';
 
 interface SidebarProps {
   activeTab: string;
@@ -9,12 +10,25 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, userName }) => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  useEffect(() => {
+     const savedSession = localStorage.getItem('unity_user_session');
+     if (savedSession) {
+         try {
+             setCurrentUser(JSON.parse(savedSession));
+         } catch (e) {}
+     }
+  }, []);
+
+  const isEmployee = currentUser?.role === 'employee';
+
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'pontua', label: 'Pontua', icon: Trophy },
-    { id: 'reports', label: 'Relatórios', icon: FileText },
-    { id: 'users', label: 'Usuários', icon: Users },
-    { id: 'settings', label: 'Configurações', icon: Settings },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, visible: true },
+    { id: 'pontua', label: 'Pontua', icon: Trophy, visible: true },
+    { id: 'reports', label: 'Relatórios', icon: FileText, visible: !isEmployee },
+    { id: 'users', label: 'Usuários', icon: Users, visible: !isEmployee },
+    { id: 'settings', label: 'Configurações', icon: Settings, visible: !isEmployee },
   ];
 
   const openTvMode = () => {
@@ -34,7 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
       </div>
 
       <nav className="flex-1 py-6 px-3 space-y-1">
-        {menuItems.map((item) => {
+        {menuItems.filter(i => i.visible).map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
           return (
@@ -53,6 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
           );
         })}
 
+        {!isEmployee && (
         <div className="pt-4 mt-4 border-t border-slate-800">
            <button
               onClick={openTvMode}
@@ -62,6 +77,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
               <span className="font-medium">Modo TV / Público</span>
             </button>
         </div>
+        )}
       </nav>
 
       <div className="p-4 border-t border-slate-700 bg-slate-900">
@@ -71,7 +87,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
           </div>
           <div className="overflow-hidden">
             <p className="text-sm font-medium truncate">{userName}</p>
-            <p className="text-xs text-slate-400">Admin</p>
+            <p className="text-xs text-slate-400">
+                {isEmployee ? 'Técnico' : 'Admin'}
+            </p>
           </div>
         </div>
         <button

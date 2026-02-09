@@ -56,17 +56,27 @@ async function initDatabase() {
             }
         };
 
+        // Migrations Companies
         await addColumnSafe('companies', 'plan_id INT');
         await addColumnSafe('companies', 'email_contact VARCHAR(255)');
         await addColumnSafe('companies', 'status ENUM(\'active\', \'inactive\', \'suspended\') DEFAULT \'active\'');
         await addColumnSafe('companies', 'expiration_date DATE');
-        
-        // Novos campos de configuração
         await addColumnSafe('companies', 'address VARCHAR(255)');
         await addColumnSafe('companies', 'phone VARCHAR(50)');
-        await addColumnSafe('companies', 'logo_url LONGTEXT'); // Base64 pode ser grande
+        await addColumnSafe('companies', 'logo_url LONGTEXT'); 
 
-        await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
+        // Migrations Users
+        await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
+        
+        // Adiciona ixc_employee_id na tabela users se não existir
+        await addColumnSafe('users', 'ixc_employee_id VARCHAR(50) DEFAULT NULL');
+        // Atualiza enum de roles se necessário (MySQL não tem ALTER COLUMN ADD VALUE fácil pra enum, então assumimos que na create table já está ou o admin roda update manual. O código JS lida com string, então o DB aceitará se for varchar ou se o enum for atualizado)
+        // Nota: Em produção real, faríamos um ALTER TABLE users MODIFY COLUMN role ENUM...
+        try {
+            await connection.query(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
+        } catch (e) {
+            // Ignora se já estiver ok
+        }
 
         await connection.query(`CREATE TABLE IF NOT EXISTS score_rules (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, subject_id VARCHAR(50) NOT NULL, points DECIMAL(10, 2) DEFAULT 0, type ENUM('internal', 'external', 'both') DEFAULT 'both', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_rule (company_id, subject_id))`);
 
@@ -129,7 +139,6 @@ app.put('/api/companies/:id', async (req, res) => {
 });
 
 // --- PROXY IXC (Resolver CORS) ---
-// O frontend chama /api/ixc-proxy/webservice/v1/... e o backend chama o IXC
 app.use('/api/ixc-proxy', async (req, res) => {
     const companyId = req.headers['x-company-id'];
     
@@ -138,7 +147,6 @@ app.use('/api/ixc-proxy', async (req, res) => {
     }
 
     try {
-        // 1. Buscar credenciais no banco
         const [rows] = await pool.query('SELECT ixc_domain, ixc_token FROM companies WHERE id = ?', [companyId]);
         
         if (rows.length === 0 || !rows[0].ixc_domain || !rows[0].ixc_token) {
@@ -147,22 +155,18 @@ app.use('/api/ixc-proxy', async (req, res) => {
 
         const { ixc_domain, ixc_token } = rows[0];
         
-        // Limpar URL e garantir formato correto
         let baseUrl = ixc_domain.trim();
         if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
-        // Construir URL final (req.url inclui o path após /api/ixc-proxy, ex: /webservice/v1/su_oss_chamado)
         const targetUrl = `${baseUrl}${req.url}`;
         const tokenBase64 = Buffer.from(ixc_token.trim()).toString('base64');
 
-        // 2. Fazer requisição ao IXC com Timeout
-        // Usa AbortController para timeout (suportado em Node 18+ e fetch moderno)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout
+        const timeoutId = setTimeout(() => controller.abort(), 30000); 
 
         const response = await fetch(targetUrl, {
-            method: 'POST', // IXC geralmente usa POST para listar
+            method: 'POST', 
             headers: {
                 'Authorization': `Basic ${tokenBase64}`,
                 'Content-Type': 'application/json',
@@ -172,13 +176,11 @@ app.use('/api/ixc-proxy', async (req, res) => {
             signal: controller.signal
         }).finally(() => clearTimeout(timeoutId));
 
-        // 3. Devolver resposta ao frontend
         const data = await response.text();
         
         try {
             res.json(JSON.parse(data));
         } catch (e) {
-            // Se não for JSON (erro HTML do IXC), devolve status original
             res.status(response.status).send(data);
         }
 
@@ -199,11 +201,12 @@ app.get('/api/users', async (req, res) => {
     const companyId = req.query.companyId;
     if (!companyId) return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions FROM users WHERE company_id = ?', [companyId]);
+        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id FROM users WHERE company_id = ?', [companyId]);
         const users = rows.map(u => ({
             ...u,
             permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
-            active: !!u.active
+            active: !!u.active,
+            ixcEmployeeId: u.ixc_employee_id // CamelCase para frontend
         }));
         res.json(users);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -211,11 +214,11 @@ app.get('/api/users', async (req, res) => {
 
 // Criar Usuário
 app.post('/api/users', async (req, res) => {
-    const { companyId, name, email, password, role, permissions, active } = req.body;
+    const { companyId, name, email, password, role, permissions, active, ixcEmployeeId } = req.body;
     try {
         const [result] = await pool.query(
-            'INSERT INTO users (company_id, name, email, password, role, permissions, active) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [companyId, name, email, password, role, JSON.stringify(permissions), active]
+            'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null]
         );
         res.json({ success: true, id: result.insertId });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -223,10 +226,10 @@ app.post('/api/users', async (req, res) => {
 
 // Editar Usuário
 app.put('/api/users/:id', async (req, res) => {
-    const { name, email, password, permissions, active } = req.body;
+    const { name, email, password, permissions, active, role, ixcEmployeeId } = req.body;
     try {
-        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?';
-        let params = [name, email, JSON.stringify(permissions), active];
+        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?';
+        let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null];
         
         if (password && password.trim() !== '') {
             query += ', password=?';
@@ -273,7 +276,8 @@ app.post('/api/login', async (req, res) => {
                     email: user.email,
                     role: user.role,
                     permissions: typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions,
-                    companyId: user.company_id ? user.company_id.toString() : null
+                    companyId: user.company_id ? user.company_id.toString() : null,
+                    ixcEmployeeId: user.ixc_employee_id ? user.ixc_employee_id.toString() : null
                 },
                 company: companyData
             });

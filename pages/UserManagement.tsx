@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2, HardHat } from 'lucide-react';
 import { User, Permission, Company } from '../types';
+
+interface IXCEmployee {
+    id: string;
+    name: string;
+}
 
 export const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -9,6 +14,10 @@ export const UserManagement: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [currentCompanyId, setCurrentCompanyId] = useState<string | null>(null);
+
+  // IXC Employees Data
+  const [ixcEmployees, setIxcEmployees] = useState<IXCEmployee[]>([]);
+  const [loadingEmployees, setLoadingEmployees] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<Partial<User>>({
@@ -20,7 +29,9 @@ export const UserManagement: React.FC = () => {
       canManageUsers: false,
       canViewScore: true,
     },
-    active: true
+    active: true,
+    role: 'user',
+    ixcEmployeeId: ''
   });
 
   useEffect(() => {
@@ -50,10 +61,56 @@ export const UserManagement: React.FC = () => {
       }
   };
 
+  const fetchIXCEmployees = async () => {
+    if (ixcEmployees.length > 0) return; // Já carregou
+
+    setLoadingEmployees(true);
+    const savedCompany = localStorage.getItem('unity_company_data');
+    if (!savedCompany) return;
+    const company: Company = JSON.parse(savedCompany);
+    
+    try {
+        const res = await fetch('/api/ixc-proxy/webservice/v1/funcionarios', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-company-id': company.id
+            },
+            body: JSON.stringify({
+                qtype: 'funcionarios.ativo', 
+                query: 'S', 
+                oper: '=', 
+                rp: '500', 
+                sortname: 'funcionarios.funcionario', 
+                sortorder: 'asc'
+            })
+        });
+
+        const data = await res.json();
+        if (data.registros) {
+            const emps = data.registros.map((r: any) => ({
+                id: r.id,
+                name: r.funcionario || r.nome
+            }));
+            setIxcEmployees(emps);
+        }
+    } catch (e) {
+        console.error("Erro ao buscar funcionários IXC", e);
+    } finally {
+        setLoadingEmployees(false);
+    }
+  };
+
   const handleOpenModal = (user?: User) => {
+    fetchIXCEmployees(); // Carrega funcionários em background
+
     if (user) {
       setEditingUser(user);
-      setFormData({ ...user, password: '' }); // Limpa senha para não exibir hash
+      setFormData({ 
+          ...user, 
+          password: '',
+          ixcEmployeeId: user.ixcEmployeeId || '' 
+      });
     } else {
       setEditingUser(null);
       setFormData({
@@ -66,7 +123,8 @@ export const UserManagement: React.FC = () => {
           canViewScore: true,
         },
         active: true,
-        role: 'user'
+        role: 'user',
+        ixcEmployeeId: ''
       });
     }
     setIsModalOpen(true);
@@ -88,6 +146,12 @@ export const UserManagement: React.FC = () => {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentCompanyId) return;
+
+    // Se escolheu funcionário, valida se selecionou um da lista
+    if (formData.role === 'employee' && !formData.ixcEmployeeId) {
+        alert("Por favor, selecione o funcionário do IXC para vincular a este usuário.");
+        return;
+    }
 
     setIsSaving(true);
     try {
@@ -123,6 +187,16 @@ export const UserManagement: React.FC = () => {
         [key]: !prev.permissions![key]
       }
     }));
+  };
+
+  const handleEmployeeSelection = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const empId = e.target.value;
+      const emp = ixcEmployees.find(emp => emp.id === empId);
+      setFormData(prev => ({
+          ...prev,
+          ixcEmployeeId: empId,
+          name: emp ? emp.name : prev.name // Auto-preenche o nome se for novo
+      }));
   };
 
   return (
@@ -173,8 +247,12 @@ export const UserManagement: React.FC = () => {
                 </td>
                 <td className="px-6 py-4">
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
-                    ${user.role === 'super_admin' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}`}>
-                    {user.role === 'super_admin' ? 'Super Admin' : 'Usuário'}
+                    ${user.role === 'super_admin' ? 'bg-purple-100 text-purple-800' : 
+                      user.role === 'admin' ? 'bg-blue-100 text-blue-800' : 
+                      user.role === 'employee' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-800'}`}>
+                    {user.role === 'super_admin' ? 'Super Admin' : 
+                     user.role === 'admin' ? 'Administrador' : 
+                     user.role === 'employee' ? 'Funcionário (Técnico)' : 'Usuário (Gestor)'}
                   </span>
                 </td>
                 <td className="px-6 py-4">
@@ -216,7 +294,7 @@ export const UserManagement: React.FC = () => {
       {/* Modal for Add/Edit User */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all animate-in zoom-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all animate-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
               <h3 className="text-lg font-bold text-gray-900">
                 {editingUser ? 'Editar Usuário' : 'Novo Usuário'}
@@ -228,6 +306,55 @@ export const UserManagement: React.FC = () => {
             
             <form onSubmit={handleSave}>
               <div className="p-6 space-y-4">
+                
+                {/* Seleção de Função (Role) */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Acesso</label>
+                  <select
+                    value={formData.role}
+                    onChange={(e) => setFormData({...formData, role: e.target.value as any})}
+                    className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 bg-white"
+                  >
+                    <option value="user">Usuário (Gestor de Setor)</option>
+                    <option value="employee">Funcionário (Técnico / Restrito)</option>
+                    <option value="admin">Administrador Geral</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {formData.role === 'employee' 
+                        ? 'Visualiza apenas seu próprio Dashboard e Pontuação.' 
+                        : formData.role === 'user' 
+                        ? 'Pode visualizar relatórios gerais e dashboards.'
+                        : 'Acesso total ao sistema.'}
+                  </p>
+                </div>
+
+                {/* Se for Funcionário, mostra combobox do IXC */}
+                {formData.role === 'employee' && (
+                    <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
+                        <label className="block text-sm font-bold text-amber-800 mb-1 flex items-center gap-2">
+                            <HardHat size={16} /> Vincular Funcionário IXC
+                        </label>
+                        {loadingEmployees ? (
+                            <div className="flex items-center gap-2 text-sm text-amber-700"><Loader2 className="animate-spin" size={14} /> Carregando lista...</div>
+                        ) : (
+                            <select
+                                value={formData.ixcEmployeeId}
+                                onChange={handleEmployeeSelection}
+                                required={formData.role === 'employee'}
+                                className="block w-full rounded-lg border-amber-300 border p-2.5 text-sm focus:border-amber-500 focus:ring-amber-500 bg-white"
+                            >
+                                <option value="">Selecione o funcionário...</option>
+                                {ixcEmployees.map(emp => (
+                                    <option key={emp.id} value={emp.id}>{emp.name}</option>
+                                ))}
+                            </select>
+                        )}
+                        <p className="text-xs text-amber-700 mt-2">
+                            O sistema usará este vínculo para filtrar automaticamente o Dashboard e Pontuação deste usuário.
+                        </p>
+                    </div>
+                )}
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
                   <input
@@ -263,6 +390,7 @@ export const UserManagement: React.FC = () => {
                   />
                 </div>
 
+                {formData.role !== 'employee' && (
                 <div className="border-t border-gray-100 pt-4 mt-2">
                   <p className="block text-sm font-medium text-gray-700 mb-3">Permissões de Acesso</p>
                   <div className="space-y-3">
@@ -293,6 +421,7 @@ export const UserManagement: React.FC = () => {
                     </label>
                   </div>
                 </div>
+                )}
               </div>
 
               <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">

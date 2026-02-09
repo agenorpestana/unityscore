@@ -1,3 +1,4 @@
+
 export interface Permission {
   canManageCompany: boolean;
   canManageUsers: boolean;
@@ -9,10 +10,11 @@ export interface User {
   name: string;
   email: string;
   password?: string; // Optional for display security
-  role: 'saas_owner' | 'super_admin' | 'admin' | 'user'; // Added 'saas_owner'
+  role: 'saas_owner' | 'super_admin' | 'admin' | 'user' | 'employee'; // Added 'employee'
   permissions: Permission;
   active: boolean;
   companyId?: string; // Link to tenant
+  ixcEmployeeId?: string; // Link to IXC Employee ID
 }
 
 export interface Company {

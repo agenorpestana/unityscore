@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, Phone, MapPin, User, FileText, Clock, AlertCircle, CheckCircle } from 'lucide-react';
-import { Technician, Subject, ServiceOrder, ScoreRule, Company } from '../types';
+import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, Phone, MapPin, User as UserIcon, FileText, Clock, AlertCircle, CheckCircle } from 'lucide-react';
+import { Technician, Subject, ServiceOrder, ScoreRule, Company, User } from '../types';
 
 interface EmployeeMapItem {
   id: string;
@@ -35,6 +35,23 @@ export const ScoreManagement: React.FC = () => {
   const [viewingOrder, setViewingOrder] = useState<DetailedServiceOrder | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
+
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  useEffect(() => {
+     const session = localStorage.getItem('unity_user_session');
+     if (session) {
+         try {
+             const user = JSON.parse(session);
+             setCurrentUser(user);
+             
+             // Se for funcionário, força o ID no filtro logo de cara
+             if (user.role === 'employee' && user.ixcEmployeeId) {
+                 setFilters(prev => ({...prev, technicianId: user.ixcEmployeeId}));
+             }
+         } catch(e) {}
+     }
+  }, []);
 
   const getTodayLocal = () => {
     const today = new Date();
@@ -97,9 +114,6 @@ export const ScoreManagement: React.FC = () => {
       catch (e) { if (text.trim().startsWith('<')) throw new Error('API retornou HTML. Verifique Proxy.'); throw new Error('JSON inválido.'); }
     } catch (err: any) { throw err; }
   };
-
-  // ... Restante do código (fetchRules, fetchStaff, etc.) permanece igual pois usam getApiConfig ...
-  // [Apenas o método getApiConfig e buildUrl precisaram mudar para apontar para o proxy]
 
   const fetchRulesFromBackend = async () => {
      try {
@@ -435,13 +449,17 @@ export const ScoreManagement: React.FC = () => {
   const handlePageChange = (newPage: number) => { if (newPage >= 1 && newPage <= totalPages) setCurrentPage(newPage); };
   const filteredSubjects = subjects.filter(sub => sub.title.toLowerCase().includes(ruleSearch.toLowerCase()));
 
+  const isEmployee = currentUser?.role === 'employee';
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-gray-200 gap-4">
         <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><Trophy className="text-yellow-500" /> Gestão de Pontuação</h2>
         <div className="flex bg-gray-100 p-1 rounded-lg">
           <button onClick={() => setActiveSubTab('technicians')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeSubTab === 'technicians' ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Pontuação Técnicos</button>
-          <button onClick={() => setActiveSubTab('rules')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeSubTab === 'rules' ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Tabela de Pontos</button>
+          {!isEmployee && (
+            <button onClick={() => setActiveSubTab('rules')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeSubTab === 'rules' ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Tabela de Pontos</button>
+          )}
         </div>
       </div>
       {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-start gap-3"><ShieldAlert size={20} className="mt-0.5 shrink-0" /><div><p className="font-bold">Erro de Comunicação</p><p className="text-sm">{error}</p></div></div>}
@@ -454,7 +472,18 @@ export const ScoreManagement: React.FC = () => {
               <div><label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label><select value={filters.dateType} onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} className="w-full rounded-lg border-gray-300 border p-2 text-sm bg-gray-50 font-medium text-brand-700"><option value="closing">Fechamento</option><option value="opening">Abertura</option></select></div>
               <div><label className="block text-xs font-medium text-gray-500 mb-1">Data Início</label><input type="date" value={filters.startDate} onChange={e => setFilters({...filters, startDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div>
               <div><label className="block text-xs font-medium text-gray-500 mb-1">Data Fim</label><input type="date" value={filters.endDate} onChange={e => setFilters({...filters, endDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div>
-              <div><label className="block text-xs font-medium text-gray-500 mb-1">Técnico (Funcionário)</label><select value={filters.technicianId} onChange={e => setFilters({...filters, technicianId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">Todos</option>{technicians.map((tech, idx) => (<option key={`${tech.id}-${idx}`} value={tech.id}>{tech.name}</option>))}</select></div>
+              <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Técnico (Funcionário)</label>
+                  <select 
+                    value={filters.technicianId} 
+                    onChange={e => setFilters({...filters, technicianId: e.target.value})} 
+                    className={`w-full rounded-lg border-gray-300 border p-2 text-sm ${isEmployee ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                    disabled={isEmployee}
+                  >
+                    <option value="">Todos</option>
+                    {technicians.map((tech, idx) => (<option key={`${tech.id}-${idx}`} value={tech.id}>{tech.name}</option>))}
+                  </select>
+              </div>
               <div><label className="block text-xs font-medium text-gray-500 mb-1">Assunto (OS)</label><select value={filters.subjectId} onChange={e => setFilters({...filters, subjectId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">Todos os Assuntos</option>{subjects.map(sub => (<option key={sub.id} value={sub.id}>{sub.title}</option>))}</select></div>
               <div className="flex items-end"><button onClick={fetchServiceOrders} disabled={isLoading} className="w-full bg-brand-600 hover:bg-brand-700 text-white p-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-70">{isLoading ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />} Filtrar</button></div>
             </div>
@@ -549,14 +578,14 @@ export const ScoreManagement: React.FC = () => {
                   <div>
                     <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Técnico Responsável</h4>
                     <div className="flex items-center gap-2">
-                       <User size={18} className="text-gray-400" />
+                       <UserIcon size={18} className="text-gray-400" />
                        <span className="font-medium text-gray-900">{viewingOrder.technicianName}</span>
                     </div>
                   </div>
                   <div>
                     <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Cliente</h4>
                     <div className="flex items-center gap-2">
-                       <User size={18} className="text-gray-400" />
+                       <UserIcon size={18} className="text-gray-400" />
                        <span className="font-medium text-gray-900">{clientCache[viewingOrder.clientId] || viewingOrder.clientName || 'Cliente não identificado'}</span>
                     </div>
                   </div>
