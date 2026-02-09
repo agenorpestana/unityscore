@@ -7,6 +7,7 @@ import { ScoreManagement } from './pages/ScoreManagement';
 import { Reports } from './pages/Reports';
 import { SuperAdminDashboard } from './pages/SuperAdminDashboard';
 import { TvDashboard } from './pages/TvDashboard';
+import { EmployeeDashboard } from './pages/EmployeeDashboard';
 import { AuthState, Company, User } from './types';
 import { 
   RefreshCw, 
@@ -232,7 +233,8 @@ const App: React.FC = () => {
   }, [getApiConfig]);
 
   useEffect(() => {
-    if (auth.isAuthenticated && activeTab === 'dashboard' && auth.user?.role !== 'saas_owner' && !isTvMode) {
+    // Busca dados do dashboard apenas se NÃO for funcionário e NÃO for modo TV
+    if (auth.isAuthenticated && activeTab === 'dashboard' && auth.user?.role !== 'saas_owner' && auth.user?.role !== 'employee' && !isTvMode) {
       fetchDashboardData();
       const interval = setInterval(fetchDashboardData, 60000); // 60s auto refresh
       return () => clearInterval(interval);
@@ -253,6 +255,8 @@ const App: React.FC = () => {
     return <SuperAdminDashboard onLogout={handleLogout} currentUser={auth.user} />;
   }
 
+  const isEmployee = auth.user?.role === 'employee';
+
   return (
     <div className="flex min-h-screen bg-gray-50 font-sans">
       <Sidebar 
@@ -263,112 +267,119 @@ const App: React.FC = () => {
       />
 
       <div className="flex-1 ml-64 p-8">
+        
+        {/* DASHBOARD TAB LOGIC */}
         {activeTab === 'dashboard' && (
-          <div className="space-y-8 animate-in fade-in duration-500">
-            <header className="flex justify-between items-center">
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-                <p className="text-gray-500 mt-1">Visão geral em tempo real da operação.</p>
-              </div>
-              
-              <div className="flex items-center gap-3">
-                {lastUpdated && (
-                  <span className="text-xs text-gray-400">
-                    Atualizado às {lastUpdated}
-                  </span>
+          isEmployee ? (
+             <EmployeeDashboard />
+          ) : (
+             // ADMINISTRATIVE DASHBOARD (ORIGINAL)
+             <div className="space-y-8 animate-in fade-in duration-500">
+                <header className="flex justify-between items-center">
+                  <div>
+                    <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+                    <p className="text-gray-500 mt-1">Visão geral em tempo real da operação.</p>
+                  </div>
+                  
+                  <div className="flex items-center gap-3">
+                    {lastUpdated && (
+                      <span className="text-xs text-gray-400">
+                        Atualizado às {lastUpdated}
+                      </span>
+                    )}
+                    <button 
+                      onClick={fetchDashboardData}
+                      disabled={loadingDashboard}
+                      className="p-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 hover:text-brand-600 transition-colors shadow-sm disabled:opacity-50"
+                      title="Atualizar dados"
+                    >
+                      <RefreshCw size={20} className={loadingDashboard ? "animate-spin" : ""} />
+                    </button>
+                  </div>
+                </header>
+
+                {dashboardError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 text-red-700">
+                    <ShieldAlert className="shrink-0 mt-0.5" size={20} />
+                    <div>
+                      <h3 className="font-bold text-sm">Aviso de Conexão</h3>
+                      <p className="text-sm">{dashboardError}</p>
+                    </div>
+                  </div>
                 )}
-                <button 
-                  onClick={fetchDashboardData}
-                  disabled={loadingDashboard}
-                  className="p-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 hover:text-brand-600 transition-colors shadow-sm disabled:opacity-50"
-                  title="Atualizar dados"
-                >
-                  <RefreshCw size={20} className={loadingDashboard ? "animate-spin" : ""} />
-                </button>
-              </div>
-            </header>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <ClipboardList size={64} className="text-blue-600" />
+                    </div>
+                    <div className="flex items-center justify-between mb-4 relative z-10">
+                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Abertas Hoje</h3>
+                      <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+                        <ClipboardList size={20} />
+                      </div>
+                    </div>
+                    <div className="relative z-10">
+                      <div className="text-4xl font-extrabold text-gray-900">
+                        {loadingDashboard ? '-' : dashboardData.openedToday}
+                      </div>
+                    </div>
+                  </div>
 
-            {dashboardError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 text-red-700">
-                 <ShieldAlert className="shrink-0 mt-0.5" size={20} />
-                 <div>
-                   <h3 className="font-bold text-sm">Aviso de Conexão</h3>
-                   <p className="text-sm">{dashboardError}</p>
-                 </div>
-              </div>
-            )}
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                  <ClipboardList size={64} className="text-blue-600" />
-                </div>
-                <div className="flex items-center justify-between mb-4 relative z-10">
-                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Abertas Hoje</h3>
-                  <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
-                    <ClipboardList size={20} />
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <CheckCircle2 size={64} className="text-green-600" />
+                    </div>
+                    <div className="flex items-center justify-between mb-4 relative z-10">
+                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Fechadas Hoje</h3>
+                      <div className="p-2 bg-green-50 text-green-600 rounded-lg">
+                        <CheckCircle2 size={20} />
+                      </div>
+                    </div>
+                    <div className="relative z-10">
+                      <div className="text-4xl font-extrabold text-gray-900">
+                        {loadingDashboard ? '-' : dashboardData.closedToday}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="relative z-10">
-                  <div className="text-4xl font-extrabold text-gray-900">
-                    {loadingDashboard ? '-' : dashboardData.openedToday}
-                  </div>
-                </div>
-              </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                  <CheckCircle2 size={64} className="text-green-600" />
-                </div>
-                <div className="flex items-center justify-between mb-4 relative z-10">
-                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Fechadas Hoje</h3>
-                  <div className="p-2 bg-green-50 text-green-600 rounded-lg">
-                    <CheckCircle2 size={20} />
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <HardHat size={64} className="text-orange-600" />
+                    </div>
+                    <div className="flex items-center justify-between mb-4 relative z-10">
+                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Com Técnicos</h3>
+                      <div className="p-2 bg-orange-50 text-orange-600 rounded-lg">
+                        <HardHat size={20} />
+                      </div>
+                    </div>
+                    <div className="relative z-10">
+                      <div className="text-4xl font-extrabold text-gray-900">
+                        {loadingDashboard ? '-' : dashboardData.withTechnicians}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="relative z-10">
-                  <div className="text-4xl font-extrabold text-gray-900">
-                    {loadingDashboard ? '-' : dashboardData.closedToday}
-                  </div>
-                </div>
-              </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                  <HardHat size={64} className="text-orange-600" />
-                </div>
-                <div className="flex items-center justify-between mb-4 relative z-10">
-                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Com Técnicos</h3>
-                  <div className="p-2 bg-orange-50 text-orange-600 rounded-lg">
-                    <HardHat size={20} />
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <AlertCircle size={64} className="text-purple-600" />
+                    </div>
+                    <div className="flex items-center justify-between mb-4 relative z-10">
+                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Total em Aberto</h3>
+                      <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                        <AlertCircle size={20} />
+                      </div>
+                    </div>
+                    <div className="relative z-10">
+                      <div className="text-4xl font-extrabold text-gray-900">
+                        {loadingDashboard ? '-' : dashboardData.totalOpen}
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="relative z-10">
-                  <div className="text-4xl font-extrabold text-gray-900">
-                    {loadingDashboard ? '-' : dashboardData.withTechnicians}
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                  <AlertCircle size={64} className="text-purple-600" />
-                </div>
-                <div className="flex items-center justify-between mb-4 relative z-10">
-                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Total em Aberto</h3>
-                  <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
-                    <AlertCircle size={20} />
-                  </div>
-                </div>
-                <div className="relative z-10">
-                  <div className="text-4xl font-extrabold text-gray-900">
-                    {loadingDashboard ? '-' : dashboardData.totalOpen}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+             </div>
+          )
         )}
 
         {activeTab === 'users' && <UserManagement />}
