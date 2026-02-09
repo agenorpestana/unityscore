@@ -42,6 +42,42 @@ export const EmployeeDashboard: React.FC = () => {
     }
   };
 
+  const fetchAllRecords = async (config: any, path: string, sortField: string) => {
+      let allRecords: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      const rp = 1000; 
+
+      while (hasMore) {
+          try {
+              const res = await safeFetch(buildUrl(config, path), {
+                  method: 'POST',
+                  headers: config.headers,
+                  body: JSON.stringify({ 
+                      qtype: sortField, 
+                      query: '0', 
+                      oper: '>', 
+                      rp: String(rp), 
+                      page: String(page),
+                      sortname: sortField, 
+                      sortorder: 'asc' 
+                  })
+              });
+              
+              if (res.registros && Array.isArray(res.registros)) {
+                  allRecords = [...allRecords, ...res.registros];
+                  if (res.registros.length < rp) hasMore = false;
+                  else page++;
+              } else {
+                  hasMore = false;
+              }
+          } catch (e) {
+              hasMore = false;
+          }
+      }
+      return allRecords;
+  };
+
   const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = rules[order.subjectId]?.points || 0;
@@ -77,26 +113,39 @@ export const EmployeeDashboard: React.FC = () => {
             setScoreRules(rules);
         }
 
-        // 2. Fetch Employees (to map Names)
-        const allEmployeesRes = await safeFetch(buildUrl(config, '/webservice/v1/funcionarios'), {
-            method: 'POST',
-            headers: config.headers,
-            body: JSON.stringify({ qtype: 'funcionarios.id', query: '0', oper: '>', rp: '1000', sortname: 'funcionarios.funcionario', sortorder: 'asc' }),
-            signal: controller.signal
+        // 2. Fetch Employees & Users for Group Mapping
+        const [allEmployees, allUsers] = await Promise.all([
+             fetchAllRecords(config, '/webservice/v1/funcionarios', 'funcionarios.id'),
+             fetchAllRecords(config, '/webservice/v1/usuarios', 'usuarios.id')
+        ]);
+
+        // Maps
+        const techEmployees = new Map<string, string>(); // ID -> Nome
+        const nameToTechId = new Map<string, string>(); // Nome -> ID
+        
+        allEmployees.forEach((e: any) => {
+             const name = e.funcionario || e.nome;
+             if (e.id && name) {
+                 techEmployees.set(String(e.id), name);
+                 nameToTechId.set(name.toLowerCase().trim(), String(e.id));
+             }
         });
 
-        const techEmployees = new Map<string, string>();
-        const nameToTechId = new Map<string, string>();
-        
-        if (allEmployeesRes.registros) {
-            allEmployeesRes.registros.forEach((e: any) => {
-                const name = e.funcionario || e.nome;
-                if (e.id && name) {
-                    techEmployees.set(String(e.id), name);
-                    nameToTechId.set(name.toLowerCase().trim(), String(e.id));
-                }
-            });
-        }
+        const userToGroupMap = new Map<string, string>(); // UserID -> GroupID
+        const userToEmployeeMap = new Map<string, string>(); // UserID -> EmpID
+        const empToGroupMap = new Map<string, string>(); // EmpID -> GroupID
+
+        allUsers.forEach((u: any) => {
+            const uId = String(u.id);
+            const gId = String(u.id_grupo);
+            const empId = String(u.funcionario);
+
+            if (gId && gId !== '0') userToGroupMap.set(uId, gId);
+            if (empId && empId !== '0') {
+                userToEmployeeMap.set(uId, empId);
+                if (gId && gId !== '0') empToGroupMap.set(empId, gId);
+            }
+        });
 
         // 3. Fetch OS for Current Month
         const now = new Date();
@@ -111,7 +160,7 @@ export const EmployeeDashboard: React.FC = () => {
                 qtype: 'su_oss_chamado.data_fechamento', 
                 query: queryDate, 
                 oper: '>=', 
-                rp: '5000', // Fetch more to ensure we get all month's data
+                rp: '5000', 
                 sortname: 'su_oss_chamado.data_fechamento',
                 sortorder: 'desc'
             }),
@@ -122,19 +171,45 @@ export const EmployeeDashboard: React.FC = () => {
         const statsMonth: Record<string, { pts: number, count: number, name: string }> = {};
 
         batch.forEach((reg: any) => {
+            // LÓGICA DE IDENTIFICAÇÃO E FILTRO DE GRUPO (Suporte Campo = 4)
             let techId = String(reg.id_tecnico);
             let techName = '';
+            let groupId = '';
 
+            // 1. Tenta pelo ID do Técnico direto
             if (techId && techId !== '0' && techEmployees.has(techId)) {
                 techName = techEmployees.get(techId)!;
-            } else if (reg.tecnico) {
-                techName = reg.tecnico;
-            } else if (reg.id_login) {
-                // Simplified fallback logic for Employee Dashboard
-                return; 
+                groupId = empToGroupMap.get(techId) || '';
+            }
+            
+            // 2. Fallback: Tenta pelo ID de Login (Usuário)
+            if ((!techName || techId === '0') && reg.id_login) {
+                const loginId = String(reg.id_login);
+                const linkedEmpId = userToEmployeeMap.get(loginId);
+                
+                if (linkedEmpId && techEmployees.has(linkedEmpId)) {
+                    techId = linkedEmpId;
+                    techName = techEmployees.get(linkedEmpId)!;
+                    groupId = empToGroupMap.get(linkedEmpId) || '';
+                } else {
+                    groupId = userToGroupMap.get(loginId) || '';
+                }
+            }
+
+            // 3. Fallback: Nome escrito na OS
+            if (!techName && reg.tecnico) {
+                 techName = reg.tecnico;
+                 const foundId = nameToTechId.get(techName.toLowerCase().trim());
+                 if (foundId) {
+                     techId = foundId;
+                     groupId = empToGroupMap.get(foundId) || '';
+                 }
             }
 
             if (!techName) return;
+
+            // *** FILTRO OBRIGATÓRIO: APENAS SUPORTE CAMPO (ID 4) ***
+            if (groupId !== '4') return;
 
             // Date Check
             let closingDateStr = reg.data_fechamento;
@@ -198,7 +273,7 @@ export const EmployeeDashboard: React.FC = () => {
       <header className="flex justify-between items-end">
         <div>
             <h1 className="text-3xl font-bold text-gray-900">Meu Desempenho</h1>
-            <p className="text-gray-500 mt-1">Acompanhe o ranking de pontuação mensal.</p>
+            <p className="text-gray-500 mt-1">Acompanhe o ranking de pontuação mensal (Suporte Campo).</p>
         </div>
         <div className="flex items-center gap-2 text-sm text-gray-500">
             <span>Atualizado: {lastUpdated}</span>
@@ -219,7 +294,7 @@ export const EmployeeDashboard: React.FC = () => {
                  <p>Carregando ranking...</p>
              </div>
         ) : ranking.length === 0 ? (
-             <div className="py-20 text-center text-slate-500 italic">Nenhum dado de pontuação encontrado neste mês.</div>
+             <div className="py-20 text-center text-slate-500 italic">Nenhum dado de pontuação encontrado para Suporte Campo neste mês.</div>
         ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-12 gap-y-2">
                 
