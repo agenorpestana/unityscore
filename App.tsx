@@ -15,7 +15,8 @@ import {
   CheckCircle2, 
   HardHat, 
   AlertCircle,
-  ShieldAlert
+  ShieldAlert,
+  Menu // Importando ícone de Menu
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -26,6 +27,7 @@ const App: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isTvMode, setIsTvMode] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); // Estado do menu mobile
 
   // 1. Check for TV Mode in URL on mount
   // 2. Check for Persisted User Session (F5 fix)
@@ -84,6 +86,7 @@ const App: React.FC = () => {
     });
     localStorage.removeItem('unity_user_session'); // Remove sessão ao sair
     setActiveTab('dashboard');
+    setIsMobileMenuOpen(false);
   };
 
   // --- API Helpers (USANDO PROXY INTERNO) ---
@@ -258,15 +261,34 @@ const App: React.FC = () => {
   const isEmployee = auth.user?.role === 'employee';
 
   return (
-    <div className="flex min-h-screen bg-gray-50 font-sans">
+    <div className="flex min-h-screen bg-gray-50 font-sans relative">
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
         onLogout={handleLogout}
         userName={auth.user?.name || 'Admin'}
+        isOpen={isMobileMenuOpen}
+        onClose={() => setIsMobileMenuOpen(false)}
       />
 
-      <div className="flex-1 ml-64 p-8">
+      {/* Conteúdo Principal com Ajuste Responsivo */}
+      <div className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300 w-full">
+        
+        {/* Mobile Header Bar */}
+        <div className="md:hidden flex items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+           <div className="flex items-center gap-3">
+             <button 
+               onClick={() => setIsMobileMenuOpen(true)}
+               className="p-2 -ml-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+             >
+               <Menu size={24} />
+             </button>
+             <h1 className="font-bold text-gray-800">Unity Score</h1>
+           </div>
+           <div className="h-8 w-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-bold">
+              {auth.user?.name?.charAt(0).toUpperCase()}
+           </div>
+        </div>
         
         {/* DASHBOARD TAB LOGIC */}
         {activeTab === 'dashboard' && (
@@ -275,16 +297,16 @@ const App: React.FC = () => {
           ) : (
              // ADMINISTRATIVE DASHBOARD (ORIGINAL)
              <div className="space-y-8 animate-in fade-in duration-500">
-                <header className="flex justify-between items-center">
+                <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-                    <p className="text-gray-500 mt-1">Visão geral em tempo real da operação.</p>
+                    <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Dashboard</h1>
+                    <p className="text-gray-500 mt-1 text-sm md:text-base">Visão geral em tempo real da operação.</p>
                   </div>
                   
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     {lastUpdated && (
                       <span className="text-xs text-gray-400">
-                        Atualizado às {lastUpdated}
+                        {lastUpdated}
                       </span>
                     )}
                     <button 
