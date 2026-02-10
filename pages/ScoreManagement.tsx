@@ -235,6 +235,9 @@ export const ScoreManagement: React.FC = () => {
     setIsLoading(true); setError(null); setCurrentPage(1);
 
     try {
+      // 1. Refresh Splits before processing (to ensure latest state)
+      await fetchSplitsFromBackend(config.id);
+
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
       
@@ -276,6 +279,8 @@ export const ScoreManagement: React.FC = () => {
       const activeData = await activePromise.catch(() => ({ registros: [] }));
       
       const allRecords = [...allDateRegistros, ...(activeData.registros || [])];
+      
+      // Deduplicate base records
       const uniqueRecordsMap = new Map();
       allRecords.forEach((item: any) => uniqueRecordsMap.set(item.id, item));
       let uniqueOrders = Array.from(uniqueRecordsMap.values());
@@ -284,15 +289,44 @@ export const ScoreManagement: React.FC = () => {
         uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
       }
 
-      const orders: (ServiceOrder & { technicianGroup?: string })[] = uniqueOrders.map((reg: any) => {
+      // --- LOGICA DE EXPANSÃO (SPLITS) ---
+      // Se uma OS tem split, ela se multiplica para cada participante.
+      const expandedOrders: any[] = [];
+      
+      uniqueOrders.forEach((reg: any) => {
+          const splitParticipants = osSplits[reg.id]; // Access from state/fetch
+          
+          if (splitParticipants && splitParticipants.length > 0) {
+              // Create a virtual row for each participant
+              splitParticipants.forEach(pId => {
+                  expandedOrders.push({
+                      ...reg,
+                      _virtualTechId: pId,
+                      _isSplit: true
+                  });
+              });
+          } else {
+              // No split, use original
+              expandedOrders.push(reg);
+          }
+      });
+
+      const orders: (ServiceOrder & { technicianGroup?: string })[] = expandedOrders.map((reg: any) => {
+        
+        // Determinar ID do Técnico (Original ou Virtual do Split)
+        let techId = String(reg.id_tecnico); 
+        if (reg._isSplit && reg._virtualTechId) {
+            techId = String(reg._virtualTechId);
+        }
+
         let techName = 'OS SEM TÉCNICO';
         let sectorName = 'Sem Setor'; 
-        const techId = String(reg.id_tecnico); 
 
+        // Resolver Nome
         if (techId && techId !== '0') {
            const employee = employeesMap.get(techId);
            techName = employee ? employee.name : (reg.tecnico || `Técnico #${techId}`);
-        } else if (reg.tecnico) {
+        } else if (!reg._isSplit && reg.tecnico) {
            techName = reg.tecnico;
         }
 
@@ -305,7 +339,7 @@ export const ScoreManagement: React.FC = () => {
            }
         }
         
-        const subId = String(reg.id_assunto); // Ensure string
+        const subId = String(reg.id_assunto);
         const sub = subjects.find(s => s.id === subId);
         const rawFinal = reg.data_final;
         const rawFechamento = reg.data_fechamento;
@@ -326,7 +360,7 @@ export const ScoreManagement: React.FC = () => {
 
         return {
           id: reg.id,
-          technicianId: reg.id_tecnico,
+          technicianId: techId,
           technicianName: techName,
           technicianGroup: sectorName,
           clientId: reg.id_cliente,
@@ -507,6 +541,9 @@ export const ScoreManagement: React.FC = () => {
           }
           setOsSplits(newSplits);
           setSplittingOrder(null);
+          
+          // Re-fetch para atualizar a tabela visualmente
+          fetchServiceOrders();
 
       } catch (e) {
           alert('Erro ao salvar divisão');
@@ -573,14 +610,14 @@ export const ScoreManagement: React.FC = () => {
                 <thead className="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider"><tr><th className="px-6 py-3">Técnico / Setor</th><th className="px-6 py-3">Status</th><th className="px-6 py-3">Data Abertura</th><th className="px-6 py-3">Data Fechamento</th><th className="px-6 py-3">Cliente</th><th className="px-6 py-3">Assunto</th><th className="px-6 py-3 text-center">Pontos</th><th className="px-6 py-3 text-right">Ações</th></tr></thead>
                 <tbody className="divide-y divide-gray-200 text-sm">
                   {currentOrders.length > 0 ? (
-                    currentOrders.map(order => {
+                    currentOrders.map((order, idx) => {
                       const points = getPointsForOrder(order);
                       const rule = scoreRules[order.subjectId];
                       const canSplit = (rule?.allowSplit === true || rule?.allowSplit === 1) && !isEmployee;
                       const isSplit = osSplits[order.id] && osSplits[order.id].length > 1;
 
                       return (
-                      <tr key={order.id} className="hover:bg-gray-50 transition-colors">
+                      <tr key={`${order.id}-${order.technicianId}-${idx}`} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 font-medium text-gray-900">
                            <div>
                                {order.technicianName}
