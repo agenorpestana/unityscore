@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, Phone, MapPin, User as UserIcon, FileText, Clock, AlertCircle, CheckCircle } from 'lucide-react';
+import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, FileText, Clock, AlertCircle, CheckCircle, Split, Users } from 'lucide-react';
 import { Technician, Subject, ServiceOrder, ScoreRule, Company, User } from '../types';
 
 interface EmployeeMapItem {
@@ -35,6 +35,12 @@ export const ScoreManagement: React.FC = () => {
   const [viewingOrder, setViewingOrder] = useState<DetailedServiceOrder | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
+  
+  // Splits State
+  const [osSplits, setOsSplits] = useState<Record<string, string[]>>({});
+  const [splittingOrder, setSplittingOrder] = useState<ServiceOrder | null>(null);
+  const [splitParticipants, setSplitParticipants] = useState<string[]>([]);
+  const [isSavingSplit, setIsSavingSplit] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
@@ -44,8 +50,6 @@ export const ScoreManagement: React.FC = () => {
          try {
              const user = JSON.parse(session);
              setCurrentUser(user);
-             
-             // Se for funcionário, força o ID no filtro logo de cara
              if (user.role === 'employee' && user.ixcEmployeeId) {
                  setFilters(prev => ({...prev, technicianId: user.ixcEmployeeId}));
              }
@@ -82,25 +86,19 @@ export const ScoreManagement: React.FC = () => {
     } catch (e) { return dateString; }
   };
 
-  // --- API PROXY CONFIG ---
   const getApiConfig = useCallback(() => {
     const savedCompany = localStorage.getItem('unity_company_data');
     if (!savedCompany) return null;
     const company: Company = JSON.parse(savedCompany);
     if (!company.id) return null;
-
     return {
       domain: '/api/ixc-proxy', 
-      headers: { 
-          'Content-Type': 'application/json',
-          'x-company-id': company.id 
-      }
+      headers: { 'Content-Type': 'application/json', 'x-company-id': company.id },
+      id: company.id
     };
   }, []);
 
-  const buildUrl = (config: any, path: string) => {
-    return `${config.domain}${path}`;
-  };
+  const buildUrl = (config: any, path: string) => `${config.domain}${path}`;
 
   const safeFetch = async (url: string, options: RequestInit) => {
     try {
@@ -115,16 +113,25 @@ export const ScoreManagement: React.FC = () => {
     } catch (err: any) { throw err; }
   };
 
-  const fetchRulesFromBackend = async () => {
+  const fetchRulesFromBackend = async (companyId: string) => {
      try {
-         const res = await fetch('/api/score-rules');
+         const res = await fetch(`/api/score-rules?companyId=${companyId}`);
          if (res.ok) {
              const dbRules = await res.json();
              return dbRules;
          }
      } catch (e) { }
-     const savedRules = localStorage.getItem('unity_score_rules');
-     return savedRules ? JSON.parse(savedRules) : {};
+     return {};
+  };
+
+  const fetchSplitsFromBackend = async (companyId: string) => {
+      try {
+          const res = await fetch(`/api/os-splits?companyId=${companyId}`);
+          if (res.ok) {
+              const splits = await res.json();
+              setOsSplits(splits);
+          }
+      } catch (e) { console.error("Erro ao carregar splits", e); }
   };
 
   const fetchStaffData = async () => {
@@ -176,7 +183,7 @@ export const ScoreManagement: React.FC = () => {
         method: 'POST', headers: config.headers, body: JSON.stringify({ qtype: 'su_oss_assunto.ativo', query: 'S', oper: '=', rp: '1000', sortname: 'su_oss_assunto.assunto', sortorder: 'asc' })
       });
       
-      const currentRules = await fetchRulesFromBackend();
+      const currentRules = await fetchRulesFromBackend(config.id);
 
       if (data.registros) {
         const subs: Subject[] = data.registros.map((reg: any) => ({ id: reg.id, title: reg.assunto }));
@@ -185,15 +192,13 @@ export const ScoreManagement: React.FC = () => {
         let hasChanges = false;
         subs.forEach(sub => {
           if (!currentRules[sub.id]) { 
-              currentRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both' }; 
+              currentRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both', allowSplit: false }; 
               hasChanges = true; 
           }
         });
         
         setScoreRules(currentRules);
-        if (hasChanges) {
-           localStorage.setItem('unity_score_rules', JSON.stringify(currentRules));
-        }
+        fetchSplitsFromBackend(config.id);
       }
     } catch (err: any) { console.warn(`Erro assuntos: ${err.message}`); }
   };
@@ -397,19 +402,20 @@ export const ScoreManagement: React.FC = () => {
   const handleSaveRule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingRule) {
+      const config = getApiConfig();
       const updatedRules = { ...scoreRules, [editingRule.subject.id]: editingRule.rule };
       setScoreRules(updatedRules);
-      
-      localStorage.setItem('unity_score_rules', JSON.stringify(updatedRules));
       
       try {
           await fetch('/api/score-rules', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                  companyId: config?.id,
                   subjectId: editingRule.rule.subjectId,
                   points: editingRule.rule.points,
-                  type: editingRule.rule.type
+                  type: editingRule.rule.type,
+                  allowSplit: editingRule.rule.allowSplit
               })
           });
       } catch(e) {
@@ -423,6 +429,13 @@ export const ScoreManagement: React.FC = () => {
   const getPointsForOrder = (order: ServiceOrder) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
+    
+    // Lógica de Divisão (Split)
+    const splitTechs = osSplits[order.id];
+    if (splitTechs && splitTechs.length > 0) {
+        const count = splitTechs.length;
+        points = Math.floor(points / count); // Divisão inteira, descarta resto
+    }
 
     if (order.reopeningDate && order.reopeningDate !== '-') {
         const dateOriginal = new Date(order.closingDate); 
@@ -438,6 +451,64 @@ export const ScoreManagement: React.FC = () => {
         }
     }
     return points;
+  };
+
+  // --- LOGICA DE SPLIT (DIVISÃO) ---
+  const openSplitModal = (order: ServiceOrder) => {
+      setSplittingOrder(order);
+      // Se já houver participantes salvos, carrega eles, senão carrega o técnico original
+      const existing = osSplits[order.id];
+      if (existing) {
+          setSplitParticipants(existing);
+      } else {
+          setSplitParticipants([order.technicianId]);
+      }
+  };
+
+  const toggleParticipant = (techId: string) => {
+      if (splitParticipants.includes(techId)) {
+          setSplitParticipants(prev => prev.filter(id => id !== techId));
+      } else {
+          setSplitParticipants(prev => [...prev, techId]);
+      }
+  };
+
+  const saveSplit = async () => {
+      if (!splittingOrder) return;
+      const config = getApiConfig();
+      if (!config) return;
+
+      setIsSavingSplit(true);
+      try {
+          // Se lista vazia ou só tem o original, remove do split (volta ao normal)
+          let finalParticipants = splitParticipants;
+          if (finalParticipants.length === 0) finalParticipants = []; // Limpa
+
+          await fetch('/api/os-splits', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  companyId: config.id,
+                  osId: splittingOrder.id,
+                  technicianIds: finalParticipants
+              })
+          });
+
+          // Atualiza estado local
+          const newSplits = { ...osSplits };
+          if (finalParticipants.length > 1) {
+              newSplits[splittingOrder.id] = finalParticipants;
+          } else {
+              delete newSplits[splittingOrder.id]; // Remove se for 1 ou 0
+          }
+          setOsSplits(newSplits);
+          setSplittingOrder(null);
+
+      } catch (e) {
+          alert('Erro ao salvar divisão');
+      } finally {
+          setIsSavingSplit(false);
+      }
   };
 
   const totalPoints = serviceOrders.reduce((sum, order) => sum + getPointsForOrder(order), 0);
@@ -500,10 +571,17 @@ export const ScoreManagement: React.FC = () => {
                   {currentOrders.length > 0 ? (
                     currentOrders.map(order => {
                       const points = getPointsForOrder(order);
+                      const rule = scoreRules[order.subjectId];
+                      const canSplit = rule?.allowSplit && !isEmployee;
+                      const isSplit = osSplits[order.id] && osSplits[order.id].length > 1;
+
                       return (
                       <tr key={order.id} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 font-medium text-gray-900">
-                           <div>{order.technicianName}</div>
+                           <div>
+                               {order.technicianName}
+                               {isSplit && <span className="ml-2 text-[10px] bg-purple-100 text-purple-700 px-1 rounded border border-purple-200 font-bold" title="Dividido com outros técnicos">DIVIDIDO ({osSplits[order.id].length})</span>}
+                           </div>
                            {order.technicianGroup ? <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 mt-1 border border-gray-200">{order.technicianGroup}</span> : <span className="text-[10px] text-red-400 italic block mt-1">Setor não encontrado</span>}
                            {order.technicianId && order.technicianId !== '0' && <span className="block text-[10px] text-gray-400 font-mono mt-0.5">ID: {order.technicianId}</span>}
                         </td>
@@ -513,7 +591,16 @@ export const ScoreManagement: React.FC = () => {
                         <td className="px-6 py-4 text-gray-500">{clientCache[order.clientId] || order.clientName}</td>
                         <td className="px-6 py-4"><span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">{order.subjectName}</span></td>
                         <td className="px-6 py-4 text-center"><span className={`font-bold ${points > 0 ? 'text-brand-600' : points < 0 ? 'text-red-600' : 'text-gray-300'}`}>{points}</span></td>
-                        <td className="px-6 py-4 text-right"><button onClick={() => handleViewDetails(order)} className="text-brand-600 hover:text-brand-800 text-xs font-medium hover:underline">Ver Detalhes</button></td>
+                        <td className="px-6 py-4 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                                {canSplit && (
+                                    <button onClick={() => openSplitModal(order)} title="Dividir Pontos" className="text-purple-600 hover:text-purple-800 p-1 hover:bg-purple-50 rounded transition-colors">
+                                        <Split size={16} />
+                                    </button>
+                                )}
+                                <button onClick={() => handleViewDetails(order)} className="text-brand-600 hover:text-brand-800 text-xs font-medium hover:underline">Ver Detalhes</button>
+                            </div>
+                        </td>
                       </tr>
                     )})
                   ) : (<tr><td colSpan={8} className="px-6 py-12 text-center text-gray-500">{isLoading ? 'Carregando...' : 'Nenhuma ordem de serviço encontrada.'}</td></tr>)}
@@ -538,11 +625,11 @@ export const ScoreManagement: React.FC = () => {
                <div className="relative w-full md:w-64"><Search className="absolute left-3 top-2.5 text-gray-400" size={18} /><input type="text" placeholder="Buscar assunto..." value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} className="pl-10 w-full rounded-lg border-gray-300 border p-2 text-sm" /></div>
              </div>
              <div className="overflow-x-auto border rounded-lg border-gray-200">
-               <table className="w-full text-left"><thead className="bg-gray-50 border-b border-gray-200"><tr><th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase">Assunto</th><th className="px-6 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Pontos</th><th className="px-6 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Tipo</th><th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Ação</th></tr></thead>
+               <table className="w-full text-left"><thead className="bg-gray-50 border-b border-gray-200"><tr><th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase">Assunto</th><th className="px-6 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Pontos</th><th className="px-6 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Divisão?</th><th className="px-6 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Tipo</th><th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Ação</th></tr></thead>
                   <tbody className="divide-y divide-gray-200 text-sm">
-                     {filteredSubjects.length > 0 ? (filteredSubjects.map(sub => { const rule = scoreRules[sub.id] || { subjectId: sub.id, points: 0, type: 'both' }; return (
-                           <tr key={sub.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium text-gray-900">{sub.title}</td><td className="px-6 py-4 text-center">{rule.points > 0 ? <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">{rule.points} pts</span> : <span className="text-gray-400">-</span>}</td><td className="px-6 py-4 text-center text-gray-600 capitalize">{rule.type === 'both' ? 'Ambos' : rule.type === 'internal' ? 'Interno' : 'Externo'}</td><td className="px-6 py-4 text-right"><button onClick={() => setEditingRule({ subject: sub, rule })} className="text-brand-600 hover:text-brand-800 p-2 hover:bg-brand-50 rounded-lg transition-colors"><Edit2 size={16} /></button></td></tr>
-                         ); })) : (<tr><td colSpan={4} className="p-8 text-center text-gray-500">Nenhum assunto encontrado.</td></tr>)}
+                     {filteredSubjects.length > 0 ? (filteredSubjects.map(sub => { const rule = scoreRules[sub.id] || { subjectId: sub.id, points: 0, type: 'both', allowSplit: false }; return (
+                           <tr key={sub.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium text-gray-900">{sub.title}</td><td className="px-6 py-4 text-center">{rule.points > 0 ? <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">{rule.points} pts</span> : <span className="text-gray-400">-</span>}</td><td className="px-6 py-4 text-center">{rule.allowSplit ? <CheckCircle size={16} className="mx-auto text-purple-600"/> : <span className="text-gray-300">-</span>}</td><td className="px-6 py-4 text-center text-gray-600 capitalize">{rule.type === 'both' ? 'Ambos' : rule.type === 'internal' ? 'Interno' : 'Externo'}</td><td className="px-6 py-4 text-right"><button onClick={() => setEditingRule({ subject: sub, rule })} className="text-brand-600 hover:text-brand-800 p-2 hover:bg-brand-50 rounded-lg transition-colors"><Edit2 size={16} /></button></td></tr>
+                         ); })) : (<tr><td colSpan={5} className="p-8 text-center text-gray-500">Nenhum assunto encontrado.</td></tr>)}
                   </tbody>
                </table>
              </div>
@@ -555,9 +642,77 @@ export const ScoreManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50"><h3 className="text-lg font-bold text-gray-900">Editar Pontuação</h3><button onClick={() => setEditingRule(null)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button></div>
-            <form onSubmit={handleSaveRule}><div className="p-6 space-y-5"><div><label className="block text-sm font-medium text-gray-500 mb-1">Assunto</label><div className="text-gray-900 font-medium text-lg">{editingRule.subject.title}</div></div><div><label className="block text-sm font-medium text-gray-700 mb-2">Quantidade de Pontos</label><input type="number" min="0" step="0.5" required value={editingRule.rule.points} onChange={e => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, points: parseFloat(e.target.value) } })} className="block w-full rounded-lg border-gray-300 border p-3 text-lg font-semibold text-brand-600 focus:border-brand-500 focus:ring-brand-500" /></div><div><label className="block text-sm font-medium text-gray-700 mb-3">Tipo de Pontuação</label><div className="grid grid-cols-3 gap-3"><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'internal' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'internal'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'internal' } })} /><span className="text-sm font-medium">Interno</span></label><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'external' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'external'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'external' } })} /><span className="text-sm font-medium">Externo</span></label><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'both' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'both'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'both' } })} /><span className="text-sm font-medium">Ambos</span></label></div></div></div><div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3"><button type="button" onClick={() => setEditingRule(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Cancelar</button><button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 flex items-center gap-2"><Save size={16} /> Salvar</button></div></form>
+            <form onSubmit={handleSaveRule}><div className="p-6 space-y-5"><div><label className="block text-sm font-medium text-gray-500 mb-1">Assunto</label><div className="text-gray-900 font-medium text-lg">{editingRule.subject.title}</div></div><div><label className="block text-sm font-medium text-gray-700 mb-2">Quantidade de Pontos</label><input type="number" min="0" step="0.5" required value={editingRule.rule.points} onChange={e => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, points: parseFloat(e.target.value) } })} className="block w-full rounded-lg border-gray-300 border p-3 text-lg font-semibold text-brand-600 focus:border-brand-500 focus:ring-brand-500" /></div>
+            
+            <div className="flex items-center gap-3 bg-purple-50 p-3 rounded-lg border border-purple-100">
+                <input 
+                    type="checkbox" 
+                    id="allowSplit"
+                    checked={editingRule.rule.allowSplit || false} 
+                    onChange={e => setEditingRule({...editingRule, rule: {...editingRule.rule, allowSplit: e.target.checked}})}
+                    className="w-5 h-5 text-purple-600 rounded border-gray-300 focus:ring-purple-500"
+                />
+                <label htmlFor="allowSplit" className="text-sm font-medium text-purple-900 cursor-pointer select-none">
+                    Permitir dividir pontos nesta OS?
+                </label>
+            </div>
+
+            <div><label className="block text-sm font-medium text-gray-700 mb-3">Tipo de Pontuação</label><div className="grid grid-cols-3 gap-3"><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'internal' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'internal'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'internal' } })} /><span className="text-sm font-medium">Interno</span></label><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'external' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'external'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'external' } })} /><span className="text-sm font-medium">Externo</span></label><label className={`cursor-pointer border rounded-lg p-3 text-center transition-all ${editingRule.rule.type === 'both' ? 'border-brand-500 bg-brand-50 text-brand-700 ring-1 ring-brand-500' : 'border-gray-200 hover:border-gray-300'}`}><input type="radio" name="scoreType" className="sr-only" checked={editingRule.rule.type === 'both'} onChange={() => setEditingRule({ ...editingRule, rule: { ...editingRule.rule, type: 'both' } })} /><span className="text-sm font-medium">Ambos</span></label></div></div></div><div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3"><button type="button" onClick={() => setEditingRule(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Cancelar</button><button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 flex items-center gap-2"><Save size={16} /> Salvar</button></div></form>
           </div>
         </div>
+      )}
+
+      {/* Modal de DIVISÃO DE PONTOS */}
+      {splittingOrder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-purple-50">
+                      <div>
+                        <h3 className="text-lg font-bold text-purple-900 flex items-center gap-2"><Split size={20}/> Dividir Pontos</h3>
+                        <p className="text-xs text-purple-700">OS #{splittingOrder.id} - {splittingOrder.subjectName}</p>
+                      </div>
+                      <button onClick={() => setSplittingOrder(null)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+                  </div>
+                  
+                  <div className="p-6 flex-1 overflow-y-auto">
+                      <div className="bg-blue-50 p-3 rounded-lg text-sm text-blue-800 mb-4">
+                          <strong>Regra:</strong> A pontuação total ({scoreRules[splittingOrder.subjectId]?.points || 0} pts) será dividida igualmente entre os técnicos selecionados abaixo. Restos da divisão serão descartados.
+                      </div>
+
+                      <div className="mb-2 font-medium text-gray-700">Selecione os participantes:</div>
+                      <div className="space-y-2 max-h-60 overflow-y-auto border rounded-lg p-2">
+                          {technicians.map(tech => (
+                              <label key={tech.id} className={`flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-gray-50 ${splitParticipants.includes(tech.id) ? 'bg-purple-50 border border-purple-200' : ''}`}>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={splitParticipants.includes(tech.id)}
+                                    onChange={() => toggleParticipant(tech.id)}
+                                    className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                                  />
+                                  <span className={splitParticipants.includes(tech.id) ? 'font-bold text-purple-900' : 'text-gray-700'}>{tech.name}</span>
+                              </label>
+                          ))}
+                      </div>
+                      
+                      <div className="mt-4 flex justify-between items-center text-sm font-medium bg-gray-100 p-3 rounded">
+                          <span>Participantes: {splitParticipants.length}</span>
+                          <span>Pontos por técnico: {splitParticipants.length > 0 ? Math.floor((scoreRules[splittingOrder.subjectId]?.points || 0) / splitParticipants.length) : 0}</span>
+                      </div>
+                  </div>
+
+                  <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+                      <button onClick={() => setSplittingOrder(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Cancelar</button>
+                      <button 
+                        onClick={saveSplit} 
+                        disabled={isSavingSplit || splitParticipants.length === 0}
+                        className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 flex items-center gap-2 disabled:opacity-50"
+                      >
+                          {isSavingSplit ? <Loader2 className="animate-spin" size={16}/> : <Save size={16} />} 
+                          Salvar Divisão
+                      </button>
+                  </div>
+              </div>
+          </div>
       )}
 
       {/* Modal de Detalhes da OS */}
@@ -578,14 +733,14 @@ export const ScoreManagement: React.FC = () => {
                   <div>
                     <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Técnico Responsável</h4>
                     <div className="flex items-center gap-2">
-                       <UserIcon size={18} className="text-gray-400" />
+                       <Users size={18} className="text-gray-400" />
                        <span className="font-medium text-gray-900">{viewingOrder.technicianName}</span>
                     </div>
                   </div>
                   <div>
                     <h4 className="text-xs font-semibold text-gray-500 uppercase mb-1">Cliente</h4>
                     <div className="flex items-center gap-2">
-                       <UserIcon size={18} className="text-gray-400" />
+                       <Users size={18} className="text-gray-400" />
                        <span className="font-medium text-gray-900">{clientCache[viewingOrder.clientId] || viewingOrder.clientName || 'Cliente não identificado'}</span>
                     </div>
                   </div>
@@ -603,6 +758,9 @@ export const ScoreManagement: React.FC = () => {
                     <div className={`text-2xl font-bold flex items-center gap-1 ${getPointsForOrder(viewingOrder) < 0 ? 'text-red-600' : 'text-brand-600'}`}>
                       {getPointsForOrder(viewingOrder)} <span className="text-sm font-normal text-gray-500">pontos</span>
                     </div>
+                    {osSplits[viewingOrder.id] && osSplits[viewingOrder.id].length > 1 && (
+                        <p className="text-xs text-purple-600 font-bold mt-1">Pontos divididos entre {osSplits[viewingOrder.id].length} técnicos.</p>
+                    )}
                   </div>
                 </div>
               </div>

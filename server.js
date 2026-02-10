@@ -68,17 +68,18 @@ async function initDatabase() {
         // Migrations Users
         await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
         
-        // Adiciona ixc_employee_id na tabela users se não existir
         await addColumnSafe('users', 'ixc_employee_id VARCHAR(50) DEFAULT NULL');
-        // Atualiza enum de roles se necessário (MySQL não tem ALTER COLUMN ADD VALUE fácil pra enum, então assumimos que na create table já está ou o admin roda update manual. O código JS lida com string, então o DB aceitará se for varchar ou se o enum for atualizado)
-        // Nota: Em produção real, faríamos um ALTER TABLE users MODIFY COLUMN role ENUM...
         try {
             await connection.query(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
-        } catch (e) {
-            // Ignora se já estiver ok
-        }
+        } catch (e) {}
 
         await connection.query(`CREATE TABLE IF NOT EXISTS score_rules (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, subject_id VARCHAR(50) NOT NULL, points DECIMAL(10, 2) DEFAULT 0, type ENUM('internal', 'external', 'both') DEFAULT 'both', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_rule (company_id, subject_id))`);
+
+        // Migration Score Rules (Divisão de Pontos)
+        await addColumnSafe('score_rules', 'allow_split BOOLEAN DEFAULT FALSE');
+
+        // Tabela de Splits (Divisão de Pontos por OS)
+        await connection.query(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
 
         const [users] = await connection.query("SELECT * FROM users WHERE email = ?", ['unity@unityautomacoes.com.br']);
         if (users.length === 0) {
@@ -196,7 +197,6 @@ app.use('/api/ixc-proxy', async (req, res) => {
 
 // --- GESTÃO DE USUÁRIOS (TENANT) ---
 
-// Listar Usuários da Empresa
 app.get('/api/users', async (req, res) => {
     const companyId = req.query.companyId;
     if (!companyId) return res.status(400).json({ error: 'Company ID required' });
@@ -206,13 +206,12 @@ app.get('/api/users', async (req, res) => {
             ...u,
             permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
             active: !!u.active,
-            ixcEmployeeId: u.ixc_employee_id // CamelCase para frontend
+            ixcEmployeeId: u.ixc_employee_id 
         }));
         res.json(users);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Criar Usuário
 app.post('/api/users', async (req, res) => {
     const { companyId, name, email, password, role, permissions, active, ixcEmployeeId } = req.body;
     try {
@@ -224,32 +223,99 @@ app.post('/api/users', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Editar Usuário
 app.put('/api/users/:id', async (req, res) => {
     const { name, email, password, permissions, active, role, ixcEmployeeId } = req.body;
     try {
         let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?';
         let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null];
-        
         if (password && password.trim() !== '') {
             query += ', password=?';
             params.push(password);
         }
-        
         query += ' WHERE id=?';
         params.push(req.params.id);
-
         await pool.query(query, params);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Deletar Usuário
 app.delete('/api/users/:id', async (req, res) => {
     try {
         await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- ROTAS DE REGRAS E PONTUAÇÃO ---
+
+app.get('/api/score-rules', async (req, res) => {
+    try {
+        let query = 'SELECT * FROM score_rules';
+        let params = [];
+        if (req.query.companyId) { query += ' WHERE company_id = ?'; params.push(req.query.companyId); }
+        const [rows] = await pool.query(query, params);
+        const rulesMap = {};
+        rows.forEach(row => { 
+            rulesMap[row.subject_id] = { 
+                subjectId: row.subject_id, 
+                points: Number(row.points), 
+                type: row.type,
+                allowSplit: !!row.allow_split 
+            }; 
+        });
+        res.json(rulesMap);
+    } catch (e) { res.status(500).json({error: e.message}); }
+});
+
+app.post('/api/score-rules', async (req, res) => {
+    try {
+        await pool.query(`INSERT INTO score_rules (company_id, subject_id, points, type, allow_split) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE points = VALUES(points), type = VALUES(type), allow_split = VALUES(allow_split)`, 
+        [req.body.companyId || 0, req.body.subjectId, req.body.points, req.body.type, req.body.allowSplit]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({error: e.message}); }
+});
+
+// --- ROTAS DE DIVISÃO DE PONTOS (SPLITS) ---
+
+// Obter Splits (Retorna mapa { os_id: [tech_id1, tech_id2] })
+app.get('/api/os-splits', async (req, res) => {
+    const companyId = req.query.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
+    try {
+        const [rows] = await pool.query('SELECT os_id, technician_id FROM os_splits WHERE company_id = ?', [companyId]);
+        const splits = {};
+        rows.forEach(row => {
+            if (!splits[row.os_id]) splits[row.os_id] = [];
+            splits[row.os_id].push(row.technician_id);
+        });
+        res.json(splits);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Salvar Split (Sobrescreve participantes de uma OS)
+app.post('/api/os-splits', async (req, res) => {
+    const { companyId, osId, technicianIds } = req.body;
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        // Remove anteriores
+        await connection.query('DELETE FROM os_splits WHERE company_id = ? AND os_id = ?', [companyId, osId]);
+        
+        // Insere novos (se houver)
+        if (technicianIds && technicianIds.length > 0) {
+            const values = technicianIds.map(tid => [companyId, osId, tid]);
+            await connection.query('INSERT INTO os_splits (company_id, os_id, technician_id) VALUES ?', [values]);
+        }
+        
+        await connection.commit();
+        res.json({ success: true });
+    } catch (e) {
+        await connection.rollback();
+        res.status(500).json({ error: e.message });
+    } finally {
+        connection.release();
+    }
 });
 
 // --- ROTAS DO SISTEMA (Login, SaaS, etc) ---
@@ -316,25 +382,6 @@ app.put('/api/saas/companies/:id', async (req, res) => {
 
 app.patch('/api/saas/companies/:id/status', async (req, res) => {
     try { await pool.query('UPDATE companies SET status = ? WHERE id = ?', [req.body.status, req.params.id]); res.json({ success: true }); } catch (e) { res.status(500).json({error: e.message}); }
-});
-
-app.get('/api/score-rules', async (req, res) => {
-    try {
-        let query = 'SELECT * FROM score_rules';
-        let params = [];
-        if (req.query.companyId) { query += ' WHERE company_id = ?'; params.push(req.query.companyId); }
-        const [rows] = await pool.query(query, params);
-        const rulesMap = {};
-        rows.forEach(row => { rulesMap[row.subject_id] = { subjectId: row.subject_id, points: Number(row.points), type: row.type }; });
-        res.json(rulesMap);
-    } catch (e) { res.status(500).json({error: e.message}); }
-});
-
-app.post('/api/score-rules', async (req, res) => {
-    try {
-        await pool.query(`INSERT INTO score_rules (company_id, subject_id, points, type) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE points = VALUES(points), type = VALUES(type)`, [req.body.companyId || 0, req.body.subjectId, req.body.points, req.body.type]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({error: e.message}); }
 });
 
 app.get('*', (req, res) => { res.sendFile(path.join(__dirname, 'dist', 'index.html')); });

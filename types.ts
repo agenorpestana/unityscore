@@ -82,6 +82,12 @@ export interface ScoreRule {
   subjectId: string;
   points: number;
   type: 'internal' | 'external' | 'both';
+  allowSplit?: boolean; // New: Allows points splitting
+}
+
+export interface OsSplit {
+  osId: string;
+  technicianIds: string[]; // List of Tech IDs involved
 }
 
 export interface ServiceOrder {
