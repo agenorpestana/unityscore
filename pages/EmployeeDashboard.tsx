@@ -14,6 +14,7 @@ export const EmployeeDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [osSplits, setOsSplits] = useState<Record<string, string[]>>({});
   
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -40,6 +41,18 @@ export const EmployeeDashboard: React.FC = () => {
         if (e.name === 'AbortError') throw e;
         return { registros: [] };
     }
+  };
+
+  const fetchSplitsFromBackend = async (companyId: string) => {
+    try {
+        const res = await fetch(`/api/os-splits?companyId=${companyId}`);
+        if (res.ok) {
+            const splits = await res.json();
+            setOsSplits(splits);
+            return splits;
+        }
+    } catch (e) { console.error("Erro ao carregar splits", e); }
+    return {};
   };
 
   const fetchAllRecords = async (config: any, path: string, sortField: string) => {
@@ -78,9 +91,15 @@ export const EmployeeDashboard: React.FC = () => {
       return allRecords;
   };
 
-  const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
+  const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>, splits: Record<string, string[]>) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = rules[order.subjectId]?.points || 0;
+
+    // Check Split
+    const splitParticipants = splits[order.id];
+    if (splitParticipants && splitParticipants.length > 0) {
+        points = Math.floor(points / splitParticipants.length);
+    }
     
     if (order.reopeningDate && order.reopeningDate !== '-') {
         const d1 = new Date(order.closingDate.split(' ')[0]);
@@ -105,13 +124,15 @@ export const EmployeeDashboard: React.FC = () => {
     }
 
     try {
-        // 1. Load Rules
+        // 1. Load Rules & Splits
         let rules = scoreRules;
         if (Object.keys(rules).length === 0) {
             const savedRules = localStorage.getItem('unity_score_rules');
             rules = savedRules ? JSON.parse(savedRules) : {};
             setScoreRules(rules);
         }
+
+        const splits = await fetchSplitsFromBackend(config.id);
 
         // 2. Fetch Employees & Users for Group Mapping
         const [allEmployees, allUsers] = await Promise.all([
@@ -208,9 +229,6 @@ export const EmployeeDashboard: React.FC = () => {
 
             if (!techName) return;
 
-            // *** FILTRO OBRIGATÓRIO: APENAS SUPORTE CAMPO (ID 4) ***
-            if (groupId !== '4') return;
-
             // Date Check
             let closingDateStr = reg.data_fechamento;
             let reopeningDateStr = '-';
@@ -229,15 +247,42 @@ export const EmployeeDashboard: React.FC = () => {
 
             if (!closingDateStr || !closingDateStr.startsWith(monthPrefix)) return;
 
+            // Prepare Order Object
             const orderObj: ServiceOrder = {
                 id: reg.id, technicianId: techId, technicianName: techName, clientId: '', clientName: '', subjectId: reg.id_assunto, subjectName: '', openingDate: reg.data_abertura, closingDate: closingDateStr, reopeningDate: reopeningDateStr, status: 'Fechado'
             };
 
-            const points = getPoints(orderObj, rules);
-            
-            if (!statsMonth[techName]) statsMonth[techName] = { pts: 0, count: 0, name: techName };
-            statsMonth[techName].pts += points;
-            statsMonth[techName].count += 1;
+            // *** LOGICA DE DIVISÃO E ATRIBUIÇÃO MÚLTIPLA ***
+            const currentSplits = splits[reg.id]; // Array of IDs e.g. ["50", "51"]
+            let beneficiaries: string[] = [];
+
+            if (currentSplits && currentSplits.length > 0) {
+                beneficiaries = currentSplits;
+            } else {
+                // Se não tem split, o beneficiário é apenas o dono original
+                // MAS APENAS SE ELE FOR DO GRUPO 4
+                if (groupId === '4') {
+                    beneficiaries = [techId];
+                }
+            }
+
+            // Iterate over all beneficiaries (original or split participants)
+            beneficiaries.forEach(beneficiaryId => {
+                const benName = techEmployees.get(beneficiaryId);
+                const benGroup = empToGroupMap.get(beneficiaryId);
+
+                // Só conta para ranking se o beneficiário for do Grupo 4 (Suporte Campo)
+                if (benName && benGroup === '4') {
+                    // Recalcula pontos considerando splits (divide se necessário)
+                    const pts = getPoints(orderObj, rules, splits);
+                    
+                    if (!statsMonth[benName]) statsMonth[benName] = { pts: 0, count: 0, name: benName };
+                    statsMonth[benName].pts += pts;
+                    
+                    // Contagem de OS: Se dividido, conta como 1 OS para cada um? Sim.
+                    statsMonth[benName].count += 1;
+                }
+            });
         });
 
         const sorted = Object.values(statsMonth)

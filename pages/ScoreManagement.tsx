@@ -186,18 +186,20 @@ export const ScoreManagement: React.FC = () => {
       const currentRules = await fetchRulesFromBackend(config.id);
 
       if (data.registros) {
-        const subs: Subject[] = data.registros.map((reg: any) => ({ id: reg.id, title: reg.assunto }));
+        const subs: Subject[] = data.registros.map((reg: any) => ({ id: String(reg.id), title: reg.assunto }));
         setSubjects(subs);
         
+        // Ensure synchronization
+        const mergedRules = { ...currentRules };
         let hasChanges = false;
         subs.forEach(sub => {
-          if (!currentRules[sub.id]) { 
-              currentRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both', allowSplit: false }; 
+          if (!mergedRules[sub.id]) { 
+              mergedRules[sub.id] = { subjectId: sub.id, points: 0, type: 'both', allowSplit: false }; 
               hasChanges = true; 
           }
         });
         
-        setScoreRules(currentRules);
+        setScoreRules(mergedRules);
         fetchSplitsFromBackend(config.id);
       }
     } catch (err: any) { console.warn(`Erro assuntos: ${err.message}`); }
@@ -303,7 +305,8 @@ export const ScoreManagement: React.FC = () => {
            }
         }
         
-        const sub = subjects.find(s => s.id === reg.id_assunto);
+        const subId = String(reg.id_assunto); // Ensure string
+        const sub = subjects.find(s => s.id === subId);
         const rawFinal = reg.data_final;
         const rawFechamento = reg.data_fechamento;
         let closingDate = 'EM ABERTO';
@@ -328,8 +331,8 @@ export const ScoreManagement: React.FC = () => {
           technicianGroup: sectorName,
           clientId: reg.id_cliente,
           clientName: clientCache[reg.id_cliente] || `Carregando...`, 
-          subjectId: reg.id_assunto,
-          subjectName: sub ? sub.title : `Assunto #${reg.id_assunto}`,
+          subjectId: subId,
+          subjectName: sub ? sub.title : `Assunto #${subId}`,
           openingDate: reg.data_abertura,
           closingDate: closingDate,
           reopeningDate: reopeningDate,
@@ -403,7 +406,8 @@ export const ScoreManagement: React.FC = () => {
     e.preventDefault();
     if (editingRule) {
       const config = getApiConfig();
-      const updatedRules = { ...scoreRules, [editingRule.subject.id]: editingRule.rule };
+      const ruleToSave = { ...editingRule.rule, allowSplit: !!editingRule.rule.allowSplit };
+      const updatedRules = { ...scoreRules, [editingRule.subject.id]: ruleToSave };
       setScoreRules(updatedRules);
       
       try {
@@ -415,7 +419,7 @@ export const ScoreManagement: React.FC = () => {
                   subjectId: editingRule.rule.subjectId,
                   points: editingRule.rule.points,
                   type: editingRule.rule.type,
-                  allowSplit: editingRule.rule.allowSplit
+                  allowSplit: ruleToSave.allowSplit 
               })
           });
       } catch(e) {
@@ -572,7 +576,7 @@ export const ScoreManagement: React.FC = () => {
                     currentOrders.map(order => {
                       const points = getPointsForOrder(order);
                       const rule = scoreRules[order.subjectId];
-                      const canSplit = rule?.allowSplit && !isEmployee;
+                      const canSplit = (rule?.allowSplit === true || rule?.allowSplit === 1) && !isEmployee;
                       const isSplit = osSplits[order.id] && osSplits[order.id].length > 1;
 
                       return (
@@ -648,7 +652,7 @@ export const ScoreManagement: React.FC = () => {
                 <input 
                     type="checkbox" 
                     id="allowSplit"
-                    checked={editingRule.rule.allowSplit || false} 
+                    checked={editingRule.rule.allowSplit === true} 
                     onChange={e => setEditingRule({...editingRule, rule: {...editingRule.rule, allowSplit: e.target.checked}})}
                     className="w-5 h-5 text-purple-600 rounded border-gray-300 focus:ring-purple-500"
                 />

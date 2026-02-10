@@ -30,7 +30,6 @@ interface EmpInfo {
 }
 
 // Mapeamento de emergência baseado nos dados conhecidos do cliente
-// Isso garante que os nomes apareçam mesmo se a API do IXC falhar na listagem
 const KNOWN_GROUPS: Record<string, string> = {
   '1': 'ADM',
   '2': 'Atendimento',
@@ -84,6 +83,7 @@ export const Reports: React.FC = () => {
   const [reportData, setReportData] = useState<ReportData[] | null>(null);
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [clientCache, setClientCache] = useState<Record<string, string>>({});
+  const [osSplits, setOsSplits] = useState<Record<string, string[]>>({});
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState<string>(''); 
@@ -117,7 +117,8 @@ export const Reports: React.FC = () => {
       headers: { 
           'Content-Type': 'application/json',
           'x-company-id': company.id 
-      }
+      },
+      id: company.id
     };
   }, []);
 
@@ -141,6 +142,16 @@ export const Reports: React.FC = () => {
         }
         throw err; 
     }
+  };
+
+  const fetchSplitsFromBackend = async (companyId: string) => {
+      try {
+          const res = await fetch(`/api/os-splits?companyId=${companyId}`);
+          if (res.ok) {
+              const splits = await res.json();
+              setOsSplits(splits);
+          }
+      } catch (e) { console.error("Erro ao carregar splits", e); }
   };
 
   const fetchAllRecords = async (config: any, path: string, sortField: string) => {
@@ -190,6 +201,8 @@ export const Reports: React.FC = () => {
     const config = getApiConfig();
     if (!config) return;
 
+    fetchSplitsFromBackend(config.id);
+
     try {
       // 1. Tentar buscar Funções (Cargos de RH)
       let allFunctions = await fetchAllRecords(config, '/webservice/v1/fl_funcoes', 'fl_funcoes.id');
@@ -198,108 +211,26 @@ export const Reports: React.FC = () => {
           if (retryFunctions.length > 0) allFunctions = retryFunctions;
       }
 
-      // 2. Buscar Grupos de Usuários (NOVO - Tabela 'usuarios_grupo')
-      // Estratégia Robusta: Tenta vários métodos de busca
+      // 2. Buscar Grupos de Usuários
       let allGroups: any[] = [];
-      
-      // Tentativa A: Padrão (ID > 0)
       if (allGroups.length === 0) {
         try {
             allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'usuarios_grupo.id');
         } catch (e) { console.warn('Erro fetch grupos padrão', e); }
       }
 
-      // Tentativa B: Fallback (id > 0 sem prefixo)
-      if (allGroups.length === 0) {
-         try {
-            allGroups = await fetchAllRecords(config, '/webservice/v1/usuarios_grupo', 'id');
-         } catch (e) { console.warn('Erro fetch grupos ID', e); }
-      }
-
-      // Tentativa C: Busca por Ativo = S (Geralmente infalível se tabela existir)
-      if (allGroups.length === 0) {
-         try {
-             // Busca manual sem usar o helper fetchAllRecords para ter controle total do body
-             const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
-                 method: 'POST',
-                 headers: config.headers,
-                 body: JSON.stringify({ 
-                     qtype: 'usuarios_grupo.ativo', 
-                     query: 'S', 
-                     oper: '=', 
-                     rp: '2000', 
-                     sortname: 'usuarios_grupo.id', 
-                     sortorder: 'asc' 
-                 })
-             });
-             if (res.registros && Array.isArray(res.registros)) {
-                 allGroups = res.registros;
-             }
-         } catch (e) { console.warn('Erro fetch grupos Ativo', e); }
-      }
-
-      // Tentativa D: Busca por Nome (LIKE %)
       if (allGroups.length === 0) {
          try {
              const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
                  method: 'POST',
                  headers: config.headers,
-                 body: JSON.stringify({ 
-                     qtype: 'usuarios_grupo.grupo', 
-                     query: '%', 
-                     oper: 'LIKE', 
-                     rp: '2000', 
-                     sortname: 'usuarios_grupo.id', 
-                     sortorder: 'asc' 
-                 })
-             });
-             if (res.registros && Array.isArray(res.registros)) {
-                 allGroups = res.registros;
-             }
-         } catch (e) { console.warn('Erro fetch grupos Nome', e); }
-      }
-
-      // Tentativa E: Payload identico ao Curl do usuário (Listar), com ordenação desc
-      if (allGroups.length === 0) {
-         try {
-             const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
-                 method: 'POST',
-                 headers: config.headers,
-                 body: JSON.stringify({ 
-                     qtype: 'usuarios_grupo.id', 
-                     query: '0', 
-                     oper: '>', 
-                     rp: '1000', 
-                     sortname: 'usuarios_grupo.id', 
-                     sortorder: 'desc' 
-                 })
+                 body: JSON.stringify({ qtype: 'usuarios_grupo.id', query: '0', oper: '>', rp: '1000', sortname: 'usuarios_grupo.id', sortorder: 'desc' })
              });
              if (res.registros && Array.isArray(res.registros)) {
                  allGroups = res.registros;
              }
          } catch (e) { console.warn('Erro fetch grupos Curl style', e); }
       }
-
-       // Tentativa F: Busca com oper != para forçar scan
-       if (allGroups.length === 0) {
-        try {
-            const res = await safeFetch(buildUrl(config, '/webservice/v1/usuarios_grupo'), {
-                method: 'POST',
-                headers: config.headers,
-                body: JSON.stringify({ 
-                    qtype: 'usuarios_grupo.id', 
-                    query: '0', 
-                    oper: '!=', 
-                    rp: '1000', 
-                    sortname: 'usuarios_grupo.id', 
-                    sortorder: 'asc' 
-                })
-            });
-            if (res.registros && Array.isArray(res.registros)) {
-                allGroups = res.registros;
-            }
-        } catch (e) { console.warn('Erro fetch grupos !=', e); }
-     }
 
       const [allEmployees, allUsers] = await Promise.all([
          fetchAllRecords(config, '/webservice/v1/funcionarios', 'funcionarios.id'),
@@ -315,11 +246,9 @@ export const Reports: React.FC = () => {
       });
 
       // Mapear Grupos (ID -> Nome)
-      // INICIALIZA COM OS GRUPOS CONHECIDOS (Manual Override)
       const newGroupsMap = new Map<string, string>(Object.entries(KNOWN_GROUPS));
       const groupNamesSet = new Set<string>(Object.values(KNOWN_GROUPS));
       
-      // Se a API trouxe algo, mescla/atualiza
       allGroups.forEach((g: any) => {
           const name = g.grupo || g.nome || g.descricao;
           if (g.id && name) {
@@ -328,15 +257,12 @@ export const Reports: React.FC = () => {
           }
       });
 
-      // --- FALLBACK CRÍTICO: SE NÃO CARREGOU GRUPOS, USAR IDs DOS USUÁRIOS ---
-      // Se a tabela usuarios_grupo estiver inacessível, extraímos os IDs usados na tabela 'usuarios'
       let fallbackUsed = false;
       if (allUsers.length > 0) {
           allUsers.forEach((u: any) => {
               const gId = u.id_grupo ? String(u.id_grupo) : null;
               if (gId && gId !== '0') {
                   if (!newGroupsMap.has(gId)) {
-                      // Se não temos o nome (nem da API nem do Hardcode), usa ID
                       newGroupsMap.set(gId, `Grupo #${gId}`);
                       groupNamesSet.add(`Grupo #${gId}`);
                       fallbackUsed = true;
@@ -345,16 +271,8 @@ export const Reports: React.FC = () => {
           });
       }
 
-      // Lógica de Aviso
-      if (allGroups.length === 0) {
-          if (fallbackUsed) {
+      if (allGroups.length === 0 && fallbackUsed) {
              setPermissionWarning("Aviso: API de grupos falhou. Usando mapeamento interno + IDs.");
-          } else {
-             // Se não usou fallback (todos IDs estavam no Hardcode), não assusta o usuário
-             // Mas avisa discretamente
-             // setPermissionWarning("Modo offline para Grupos (Mapeamento interno).");
-             setPermissionWarning(null); 
-          }
       } else {
           setPermissionWarning(null);
       }
@@ -373,7 +291,7 @@ export const Reports: React.FC = () => {
       // Mapear Usuários -> Funcionário E Usuário -> Grupo
       const newUserToEmpMap = new Map<string, string>();
       const newUserToGroupMap = new Map<string, string>();
-      const newEmpToGroupMap = new Map<string, string>(); // Mapeia ID Funcionário -> ID Grupo
+      const newEmpToGroupMap = new Map<string, string>(); 
 
       allUsers.forEach((u: any) => {
           const userId = String(u.id);
@@ -383,7 +301,6 @@ export const Reports: React.FC = () => {
           if (userId) {
               if (funcId && funcId !== '0' && funcId !== '') {
                   newUserToEmpMap.set(userId, funcId);
-                  // Se o usuário tem vínculo com funcionário e tem grupo, mapeia Funcionario -> Grupo
                   if (groupId && groupId !== '0' && groupId !== '') {
                       newEmpToGroupMap.set(funcId, groupId);
                   }
@@ -455,9 +372,16 @@ export const Reports: React.FC = () => {
     }
   };
 
-  const getPoints = (order: ServiceOrder) => {
+  const getPoints = (order: ServiceOrder, splits: Record<string, string[]>) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
+    
+    // Split logic for reports
+    const split = splits[order.id];
+    if (split && split.length > 0) {
+        points = Math.floor(points / split.length);
+    }
+
     if (order.reopeningDate && order.reopeningDate !== '-') {
         const dateOriginal = new Date(order.closingDate); 
         const dateReopening = new Date(order.reopeningDate); 
@@ -490,6 +414,9 @@ export const Reports: React.FC = () => {
     setLoadingProgress('Iniciando busca...'); 
     setReportData(null); 
     setError(null);
+
+    // Refresh Splits fresh
+    await fetchSplitsFromBackend(config.id);
 
     try {
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
@@ -552,63 +479,77 @@ export const Reports: React.FC = () => {
         uniqueOrders = uniqueOrders.filter((reg: any) => reg.status === 'F' || reg.status === 'EN');
       }
 
-      const orders: (ServiceOrder & { technicianFunction?: string })[] = uniqueOrders.map((reg: any) => {
+      // --- LOGICA DE ATRIBUIÇÃO MULTIPLA PARA RELATORIOS ---
+      const processedOrders: any[] = [];
+
+      uniqueOrders.forEach((reg: any) => {
+          const splitParticipants = osSplits[reg.id]; // Array of IDs
+
+          if (splitParticipants && splitParticipants.length > 0) {
+              // Create duplicates for each participant
+              splitParticipants.forEach(techId => {
+                  processedOrders.push({
+                      ...reg,
+                      _virtualTechId: techId,
+                      _isSplit: true
+                  });
+              });
+          } else {
+              // Standard attribution
+              processedOrders.push(reg);
+          }
+      });
+
+      const orders: (ServiceOrder & { technicianFunction?: string })[] = processedOrders.map((reg: any) => {
         let techName = reg.tecnico || 'OS SEM TÉCNICO';
         let functionName = 'Sem Função'; 
         
-        const osTechId = String(reg.id_tecnico); 
+        // Se for split, usa o ID virtual, senão usa o ID da OS
+        const osTechId = reg._isSplit ? reg._virtualTechId : String(reg.id_tecnico); 
         const osLoginId = String(reg.id_login);
 
         let candidateByTechId: EmpInfo | undefined;
         let candidateByLoginId: EmpInfo | undefined;
         let candidateByName: EmpInfo | undefined;
         
-        // --- NOVA LÓGICA DE GRUPO ---
-        // Agora verificamos 2 caminhos:
-        // 1. Pelo ID do Técnico (Funcionário) -> Usuário -> Grupo
-        // 2. Pelo ID do Login (Usuário que mexeu na OS) -> Grupo (Fallback)
         let groupNameFound: string | undefined;
 
-        // Caminho 1: Via Funcionário (Mais correto segundo o usuário)
+        // Caminho 1: Via Funcionário
         if (osTechId && osTechId !== '0') {
              const groupIdFromTech = empToGroupMap.get(osTechId);
              if (groupIdFromTech) {
                  const gName = groupsMap.get(groupIdFromTech);
                  groupNameFound = gName || `Grupo #${groupIdFromTech}`;
              }
+             candidateByTechId = employeesMap.get(osTechId);
         }
 
-        // Caminho 2: Via Login (Fallback se o técnico não tiver usuário vinculado)
-        if (!groupNameFound && osLoginId && osLoginId !== '0') {
+        // Caminho 2: Via Login (Fallback apenas se NÃO for split, pois split define explicitamente o técnico)
+        if (!reg._isSplit && !groupNameFound && osLoginId && osLoginId !== '0') {
             const groupId = userToGroupMap.get(osLoginId);
             if (groupId) {
                 const gName = groupsMap.get(groupId);
                 groupNameFound = gName || `Grupo #${groupId}`;
             }
-        }
-
-        if (osLoginId && osLoginId !== '0') {
             const linkedEmpId = usersToEmployeeMap.get(osLoginId);
             if (linkedEmpId) candidateByLoginId = employeesMap.get(linkedEmpId);
         }
 
-        if (osTechId && osTechId !== '0') candidateByTechId = employeesMap.get(osTechId);
-        if (reg.tecnico) candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
+        if (!reg._isSplit && reg.tecnico) candidateByName = nameToEmployeeMap.get(reg.tecnico.toLowerCase().trim());
 
         // --- DECISÃO DE QUEM É O TÉCNICO E QUAL A FUNÇÃO ---
         let finalCandidate: EmpInfo | undefined;
 
-        if (candidateByTechId) finalCandidate = candidateByTechId; // Prioridade para quem está no campo Técnico
+        if (candidateByTechId) finalCandidate = candidateByTechId; 
         else if (candidateByLoginId) finalCandidate = candidateByLoginId;
         else finalCandidate = candidateByName;
 
         if (finalCandidate) {
             techName = finalCandidate.name;
-            // Prioriza o Grupo encontrado (via Tecnico ou Login), senão usa a Função do cadastro
             functionName = groupNameFound || finalCandidate.functionName;
         } else {
             if (groupNameFound) functionName = groupNameFound;
-            else if (osLoginId !== '0') functionName = `U:${osLoginId} (Ñ Vinculado)`;
+            else if (osLoginId !== '0' && !reg._isSplit) functionName = `U:${osLoginId} (Ñ Vinculado)`;
         }
 
         const rawFinal = reg.data_final;
@@ -645,7 +586,6 @@ export const Reports: React.FC = () => {
       const filteredOrders = orders.filter(order => {
           const matchTech = filters.technicianId ? order.technicianId === filters.technicianId : true;
           const role = order.technicianFunction || 'Sem Função';
-          // Permite busca parcial (ex: "Grupo ID: 4" bate com filtro "4")
           const matchFunc = filters.function ? role.toLowerCase().includes(filters.function.toLowerCase()) : true;
           let relevantDate = filters.dateType === 'closing' && order.closingDate !== 'EM ABERTO' ? order.closingDate.split(' ')[0] : order.openingDate.split(' ')[0];
           
@@ -674,7 +614,7 @@ export const Reports: React.FC = () => {
               orders: [] 
           };
         }
-        const pts = getPoints(order);
+        const pts = getPoints(order, osSplits);
         grouped[groupKey].totalOrders += 1;
         grouped[groupKey].totalPoints += pts;
         grouped[groupKey].orders.push(order);
@@ -792,7 +732,7 @@ export const Reports: React.FC = () => {
                   <div key={item.technicianId} className="p-6">
                     <div className="flex justify-between items-center mb-4 bg-gray-50 p-3 rounded-lg border border-gray-100"><div><h4 className="font-bold text-gray-900 text-lg">{item.technicianName}</h4><span className="text-xs text-gray-500 uppercase tracking-wide">{item.role === 'Sem Função' ? 'Sem Função' : item.role}</span></div><div className="text-right"><div className="text-xs text-gray-500">Total Pontos</div><div className={`text-xl font-bold ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</div></div></div>
                     <table className="w-full text-left text-sm"><thead className="text-xs text-gray-500 uppercase border-b border-gray-200"><tr><th className="py-2 pl-2">ID OS</th><th className="py-2">Nome do Cliente</th><th className="py-2">Data Fechamento</th><th className="py-2">Data Reabertura</th><th className="py-2 text-right pr-2">Pontos</th></tr></thead><tbody className="divide-y divide-gray-100">{item.orders.map(order => {
-                       const points = getPoints(order);
+                       const points = getPoints(order, osSplits);
                        return (<tr key={order.id} className="hover:bg-gray-50"><td className="py-2 pl-2 font-mono text-gray-600">#{order.id}</td><td className="py-2 text-gray-800">{order.clientId ? (clientCache[order.clientId] || 'Buscando...') : 'N/A'}</td><td className="py-2 text-gray-600">{formatDateBR(order.closingDate)}</td><td className="py-2 text-orange-600 font-medium">{formatDateBR(order.reopeningDate)}</td><td className={`py-2 text-right pr-2 font-medium ${points < 0 ? 'text-red-600' : 'text-brand-600'}`}>{points}</td></tr>)
                     })}</tbody></table>
                   </div>
