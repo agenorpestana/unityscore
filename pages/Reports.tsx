@@ -159,10 +159,19 @@ export const Reports: React.FC = () => {
       try {
           const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
           if (res.ok) {
-              const penalties = await res.json();
-              setOsPenalties(penalties);
+              const data = await res.json();
+              if (Array.isArray(data)) {
+                  setOsPenalties(data);
+              } else {
+                  setOsPenalties([]);
+              }
+          } else {
+              setOsPenalties([]);
           }
-      } catch (e) { console.error("Erro ao carregar penalizações", e); }
+      } catch (e) { 
+          console.error("Erro ao carregar penalizações", e); 
+          setOsPenalties([]);
+      }
   };
 
   const fetchAllRecords = async (config: any, path: string, sortField: string) => {
