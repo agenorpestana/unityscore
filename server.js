@@ -151,7 +151,7 @@ app.put('/api/companies/:id', async (req, res) => {
 app.use('/api/ixc-proxy', async (req, res) => {
     const companyId = req.headers['x-company-id'];
     
-    if (!companyId) {
+    if (!companyId || companyId === 'undefined' || companyId === 'null') {
         return res.status(400).json({ error: 'Company ID not provided in headers' });
     }
 
@@ -288,7 +288,7 @@ app.post('/api/score-rules', async (req, res) => {
 // Obter Splits (Retorna mapa { os_id: [tech_id1, tech_id2] })
 app.get('/api/os-splits', async (req, res) => {
     const companyId = req.query.companyId;
-    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
+    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
     try {
         const [rows] = await pool.query('SELECT os_id, technician_id FROM os_splits WHERE company_id = ?', [companyId]);
         const splits = {};
@@ -303,6 +303,7 @@ app.get('/api/os-splits', async (req, res) => {
 // Salvar Split (Sobrescreve participantes de uma OS)
 app.post('/api/os-splits', async (req, res) => {
     const { companyId, osId, technicianIds } = req.body;
+    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -331,7 +332,7 @@ app.post('/api/os-splits', async (req, res) => {
 // Obter Penalizações
 app.get('/api/os-penalties', async (req, res) => {
     const companyId = req.query.companyId;
-    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
+    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
     try {
         const [rows] = await pool.query('SELECT * FROM os_penalties WHERE company_id = ?', [companyId]);
         const penalties = rows.map(row => ({
