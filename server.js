@@ -354,20 +354,28 @@ app.get('/api/os-penalties', async (req, res) => {
 app.post('/api/os-penalties', async (req, res) => {
     const { companyId, osId, technicianId, amount, reason } = req.body;
     try {
+        console.log(`Tentando salvar penalização: OS ${osId}, Tech ${technicianId}, Amount ${amount}`);
         await pool.query(
             'INSERT INTO os_penalties (company_id, os_id, technician_id, amount, reason) VALUES (?, ?, ?, ?, ?)',
             [companyId, osId, technicianId, amount, reason]
         );
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { 
+        console.error('Erro ao salvar penalização (POST /api/os-penalties):', e);
+        res.status(500).json({ error: e.message, details: 'Erro ao inserir no banco de dados' }); 
+    }
 });
 
 // Remover Penalização
 app.delete('/api/os-penalties/:id', async (req, res) => {
     try {
+        console.log(`Tentando deletar penalização ID: ${req.params.id}`);
         await pool.query('DELETE FROM os_penalties WHERE id = ?', [req.params.id]);
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { 
+        console.error('Erro ao deletar penalização (DELETE /api/os-penalties):', e);
+        res.status(500).json({ error: e.message }); 
+    }
 });
 
 // --- ROTAS DO SISTEMA (Login, SaaS, etc) ---

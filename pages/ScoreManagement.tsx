@@ -520,7 +520,7 @@ export const ScoreManagement: React.FC = () => {
 
       setIsSavingPenalty(true);
       try {
-          await fetch('/api/os-penalties', {
+          const response = await fetch('/api/os-penalties', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -532,11 +532,17 @@ export const ScoreManagement: React.FC = () => {
               })
           });
 
+          if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`Erro do servidor: ${response.status} - ${errorText}`);
+          }
+
           await fetchPenaltiesFromBackend(config.id);
           setPenalizingOrder(null);
           // fetchServiceOrders(); // Optional: refresh list if needed
-      } catch (e) {
-          alert('Erro ao salvar penalização');
+      } catch (e: any) {
+          console.error("Erro ao salvar penalização:", e);
+          alert(`Erro ao salvar penalização: ${e.message}`);
       } finally {
           setIsSavingPenalty(false);
       }
