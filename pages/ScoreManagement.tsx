@@ -435,8 +435,8 @@ export const ScoreManagement: React.FC = () => {
 
       setServiceOrders(filtered);
     } catch (err: any) {
-      console.error(err);
-      setError(`Erro ao buscar dados: ${err.message}`);
+      console.error("Erro fatal em fetchServiceOrders:", err);
+      setError(`Erro ao buscar dados: ${err.message || 'Erro desconhecido'}`);
     } finally { setIsLoading(false); }
   };
 
@@ -581,7 +581,8 @@ export const ScoreManagement: React.FC = () => {
     }
 
     // Penalizações
-    const penalties = osPenalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+    const penaltiesList = Array.isArray(osPenalties) ? osPenalties : [];
+    const penalties = penaltiesList.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
     const totalPenalty = penalties.reduce((sum, p) => sum + p.amount, 0);
     points = points - totalPenalty;
 

@@ -422,7 +422,8 @@ export const Reports: React.FC = () => {
     }
 
     // Penalties logic
-    const orderPenalties = penalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+    const penaltiesList = Array.isArray(penalties) ? penalties : [];
+    const orderPenalties = penaltiesList.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
     const totalPenalty = orderPenalties.reduce((sum, p) => sum + p.amount, 0);
     points = points - totalPenalty;
 
