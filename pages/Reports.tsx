@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Filter, FileText, Loader2, AlertTriangle, Printer, Database, Info, ShieldAlert } from 'lucide-react';
-import { Technician, Company, ServiceOrder, ScoreRule } from '../types';
+import { Filter, FileText, Loader2, AlertTriangle, Printer, Database, Info, ShieldAlert, Gavel } from 'lucide-react';
+import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty } from '../types';
 
 interface ReportFilter {
   startDate: string;
@@ -84,6 +84,7 @@ export const Reports: React.FC = () => {
   const [scoreRules, setScoreRules] = useState<Record<string, ScoreRule>>({});
   const [clientCache, setClientCache] = useState<Record<string, string>>({});
   const [osSplits, setOsSplits] = useState<Record<string, string[]>>({});
+  const [osPenalties, setOsPenalties] = useState<OsPenalty[]>([]);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState<string>(''); 
@@ -154,6 +155,16 @@ export const Reports: React.FC = () => {
       } catch (e) { console.error("Erro ao carregar splits", e); }
   };
 
+  const fetchPenaltiesFromBackend = async (companyId: string) => {
+      try {
+          const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
+          if (res.ok) {
+              const penalties = await res.json();
+              setOsPenalties(penalties);
+          }
+      } catch (e) { console.error("Erro ao carregar penalizações", e); }
+  };
+
   const fetchAllRecords = async (config: any, path: string, sortField: string) => {
       let allRecords: any[] = [];
       let page = 1;
@@ -202,6 +213,7 @@ export const Reports: React.FC = () => {
     if (!config) return;
 
     fetchSplitsFromBackend(config.id);
+    fetchPenaltiesFromBackend(config.id);
 
     try {
       // 1. Tentar buscar Funções (Cargos de RH)
@@ -372,7 +384,7 @@ export const Reports: React.FC = () => {
     }
   };
 
-  const getPoints = (order: ServiceOrder, splits: Record<string, string[]>) => {
+  const getPoints = (order: ServiceOrder, splits: Record<string, string[]>, penalties: OsPenalty[]) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
     
@@ -393,6 +405,12 @@ export const Reports: React.FC = () => {
             }
         }
     }
+
+    // Penalties logic
+    const orderPenalties = penalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+    const totalPenalty = orderPenalties.reduce((sum, p) => sum + p.amount, 0);
+    points = points - totalPenalty;
+
     return points;
   };
 
@@ -417,6 +435,7 @@ export const Reports: React.FC = () => {
 
     // Refresh Splits fresh
     await fetchSplitsFromBackend(config.id);
+    await fetchPenaltiesFromBackend(config.id);
 
     try {
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
@@ -614,7 +633,7 @@ export const Reports: React.FC = () => {
               orders: [] 
           };
         }
-        const pts = getPoints(order, osSplits);
+        const pts = getPoints(order, osSplits, osPenalties);
         grouped[groupKey].totalOrders += 1;
         grouped[groupKey].totalPoints += pts;
         grouped[groupKey].orders.push(order);
@@ -718,12 +737,29 @@ export const Reports: React.FC = () => {
           <div className="p-0 overflow-x-auto">
             {filters.type === 'SYNTHETIC' ? (
               <table className="w-full text-left">
-                <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase"><tr><th className="px-6 py-3">Nome do Funcionário</th><th className="px-6 py-3">Função</th><th className="px-6 py-3 text-center">Total de OS</th><th className="px-6 py-3 text-center">Pontos</th></tr></thead>
+                <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase"><tr><th className="px-6 py-3">Nome do Funcionário</th><th className="px-6 py-3">Função</th><th className="px-6 py-3 text-center">Total de OS</th><th className="px-6 py-3 text-center">Penalizações</th><th className="px-6 py-3 text-center">Pontos</th></tr></thead>
                 <tbody className="divide-y divide-gray-200">
-                  {reportData.map(item => (
-                    <tr key={item.technicianId} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium text-gray-900">{item.technicianName}</td><td className="px-6 py-4 text-gray-500">{item.role === 'Sem Função' ? <span className="text-gray-400 italic">Sem Função</span> : <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs border border-gray-200">{item.role}</span>}</td><td className="px-6 py-4 text-center text-gray-700 font-mono">{item.totalOrders}</td><td className={`px-6 py-4 text-center font-bold text-lg ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</td></tr>
-                  ))}
-                  {reportData.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</td></tr>}
+                  {reportData.map(item => {
+                      const techPenalties = osPenalties.filter(p => p.technicianId === item.technicianId && item.orders.some(o => o.id === p.osId));
+                      const totalPenaltyAmount = techPenalties.reduce((sum, p) => sum + p.amount, 0);
+                      
+                      return (
+                        <tr key={item.technicianId} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 font-medium text-gray-900">{item.technicianName}</td>
+                            <td className="px-6 py-4 text-gray-500">{item.role === 'Sem Função' ? <span className="text-gray-400 italic">Sem Função</span> : <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs border border-gray-200">{item.role}</span>}</td>
+                            <td className="px-6 py-4 text-center text-gray-700 font-mono">{item.totalOrders}</td>
+                            <td className="px-6 py-4 text-center">
+                                {techPenalties.length > 0 ? (
+                                    <div className="flex flex-col items-center">
+                                        <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100">{techPenalties.length} ( -{totalPenaltyAmount} pts )</span>
+                                    </div>
+                                ) : <span className="text-gray-300">-</span>}
+                            </td>
+                            <td className={`px-6 py-4 text-center font-bold text-lg ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</td>
+                        </tr>
+                      );
+                  })}
+                  {reportData.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</td></tr>}
                 </tbody>
               </table>
             ) : (
@@ -732,8 +768,31 @@ export const Reports: React.FC = () => {
                   <div key={item.technicianId} className="p-6">
                     <div className="flex justify-between items-center mb-4 bg-gray-50 p-3 rounded-lg border border-gray-100"><div><h4 className="font-bold text-gray-900 text-lg">{item.technicianName}</h4><span className="text-xs text-gray-500 uppercase tracking-wide">{item.role === 'Sem Função' ? 'Sem Função' : item.role}</span></div><div className="text-right"><div className="text-xs text-gray-500">Total Pontos</div><div className={`text-xl font-bold ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</div></div></div>
                     <table className="w-full text-left text-sm"><thead className="text-xs text-gray-500 uppercase border-b border-gray-200"><tr><th className="py-2 pl-2">ID OS</th><th className="py-2">Nome do Cliente</th><th className="py-2">Data Fechamento</th><th className="py-2">Data Reabertura</th><th className="py-2 text-right pr-2">Pontos</th></tr></thead><tbody className="divide-y divide-gray-100">{item.orders.map(order => {
-                       const points = getPoints(order, osSplits);
-                       return (<tr key={order.id} className="hover:bg-gray-50"><td className="py-2 pl-2 font-mono text-gray-600">#{order.id}</td><td className="py-2 text-gray-800">{order.clientId ? (clientCache[order.clientId] || 'Buscando...') : 'N/A'}</td><td className="py-2 text-gray-600">{formatDateBR(order.closingDate)}</td><td className="py-2 text-orange-600 font-medium">{formatDateBR(order.reopeningDate)}</td><td className={`py-2 text-right pr-2 font-medium ${points < 0 ? 'text-red-600' : 'text-brand-600'}`}>{points}</td></tr>)
+                       const points = getPoints(order, osSplits, osPenalties);
+                       const penalties = osPenalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+                       return (
+                           <React.Fragment key={order.id}>
+                               <tr className="hover:bg-gray-50">
+                                   <td className="py-2 pl-2 font-mono text-gray-600">#{order.id}</td>
+                                   <td className="py-2 text-gray-800">{order.clientId ? (clientCache[order.clientId] || 'Buscando...') : 'N/A'}</td>
+                                   <td className="py-2 text-gray-600">{formatDateBR(order.closingDate)}</td>
+                                   <td className="py-2 text-orange-600 font-medium">{formatDateBR(order.reopeningDate)}</td>
+                                   <td className={`py-2 text-right pr-2 font-medium ${points < 0 ? 'text-red-600' : 'text-brand-600'}`}>{points}</td>
+                               </tr>
+                               {penalties.length > 0 && (
+                                   <tr className="bg-red-50">
+                                       <td colSpan={5} className="py-1 px-4 text-xs text-red-700 border-b border-red-100 italic">
+                                           {penalties.map((p, idx) => (
+                                               <div key={idx} className="flex items-center gap-2">
+                                                   <Gavel size={10} />
+                                                   <span className="font-bold">PENALIZAÇÃO:</span> {p.reason} (-{p.amount} pts)
+                                               </div>
+                                           ))}
+                                       </td>
+                                   </tr>
+                               )}
+                           </React.Fragment>
+                       )
                     })}</tbody></table>
                   </div>
                 ))}

@@ -90,6 +90,15 @@ export interface OsSplit {
   technicianIds: string[]; // List of Tech IDs involved
 }
 
+export interface OsPenalty {
+  id: number;
+  osId: string;
+  technicianId: string;
+  amount: number;
+  reason: string;
+  createdAt: string;
+}
+
 export interface ServiceOrder {
   id: string;
   technicianId: string;

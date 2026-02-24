@@ -81,6 +81,9 @@ async function initDatabase() {
         // Tabela de Splits (Divisão de Pontos por OS)
         await connection.query(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
 
+        // Tabela de Penalizações (Penalties)
+        await connection.query(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+
         const [users] = await connection.query("SELECT * FROM users WHERE email = ?", ['unity@unityautomacoes.com.br']);
         if (users.length === 0) {
             console.log('👤 Criando usuário padrão Unity...');
@@ -316,6 +319,46 @@ app.post('/api/os-splits', async (req, res) => {
     } finally {
         connection.release();
     }
+});
+
+// --- ROTAS DE PENALIZAÇÕES ---
+
+// Obter Penalizações
+app.get('/api/os-penalties', async (req, res) => {
+    const companyId = req.query.companyId;
+    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
+    try {
+        const [rows] = await pool.query('SELECT * FROM os_penalties WHERE company_id = ?', [companyId]);
+        const penalties = rows.map(row => ({
+            id: row.id,
+            osId: row.os_id,
+            technicianId: row.technician_id,
+            amount: Number(row.amount),
+            reason: row.reason,
+            createdAt: row.created_at
+        }));
+        res.json(penalties);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Salvar Penalização
+app.post('/api/os-penalties', async (req, res) => {
+    const { companyId, osId, technicianId, amount, reason } = req.body;
+    try {
+        await pool.query(
+            'INSERT INTO os_penalties (company_id, os_id, technician_id, amount, reason) VALUES (?, ?, ?, ?, ?)',
+            [companyId, osId, technicianId, amount, reason]
+        );
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Remover Penalização
+app.delete('/api/os-penalties/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM os_penalties WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- ROTAS DO SISTEMA (Login, SaaS, etc) ---

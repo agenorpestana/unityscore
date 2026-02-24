@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, FileText, Clock, AlertCircle, CheckCircle, Split, Users } from 'lucide-react';
-import { Technician, Subject, ServiceOrder, ScoreRule, Company, User } from '../types';
+import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, FileText, Clock, AlertCircle, CheckCircle, Split, Users, Gavel, Trash2 } from 'lucide-react';
+import { Technician, Subject, ServiceOrder, ScoreRule, Company, User, OsPenalty } from '../types';
 
 interface EmployeeMapItem {
   id: string;
@@ -41,6 +41,12 @@ export const ScoreManagement: React.FC = () => {
   const [splittingOrder, setSplittingOrder] = useState<ServiceOrder | null>(null);
   const [splitParticipants, setSplitParticipants] = useState<string[]>([]);
   const [isSavingSplit, setIsSavingSplit] = useState(false);
+
+  // Penalties State
+  const [osPenalties, setOsPenalties] = useState<OsPenalty[]>([]);
+  const [penalizingOrder, setPenalizingOrder] = useState<ServiceOrder | null>(null);
+  const [penaltyForm, setPenaltyForm] = useState({ amount: '', reason: '' });
+  const [isSavingPenalty, setIsSavingPenalty] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
@@ -134,6 +140,16 @@ export const ScoreManagement: React.FC = () => {
       } catch (e) { console.error("Erro ao carregar splits", e); }
   };
 
+  const fetchPenaltiesFromBackend = async (companyId: string) => {
+      try {
+          const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
+          if (res.ok) {
+              const penalties = await res.json();
+              setOsPenalties(penalties);
+          }
+      } catch (e) { console.error("Erro ao carregar penalizações", e); }
+  };
+
   const fetchStaffData = async () => {
     const config = getApiConfig();
     if (!config) return;
@@ -201,6 +217,7 @@ export const ScoreManagement: React.FC = () => {
         
         setScoreRules(mergedRules);
         fetchSplitsFromBackend(config.id);
+        fetchPenaltiesFromBackend(config.id);
       }
     } catch (err: any) { console.warn(`Erro assuntos: ${err.message}`); }
   };
@@ -235,8 +252,9 @@ export const ScoreManagement: React.FC = () => {
     setIsLoading(true); setError(null); setCurrentPage(1);
 
     try {
-      // 1. Refresh Splits before processing (to ensure latest state)
+      // 1. Refresh Splits and Penalties before processing (to ensure latest state)
       await fetchSplitsFromBackend(config.id);
+      await fetchPenaltiesFromBackend(config.id);
 
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
@@ -464,6 +482,53 @@ export const ScoreManagement: React.FC = () => {
     }
   };
 
+  // --- LOGICA DE PENALIZAÇÃO ---
+  const openPenaltyModal = (order: ServiceOrder) => {
+      setPenalizingOrder(order);
+      setPenaltyForm({ amount: '', reason: '' });
+  };
+
+  const savePenalty = async () => {
+      if (!penalizingOrder || !penaltyForm.amount || !penaltyForm.reason) return;
+      const config = getApiConfig();
+      if (!config) return;
+
+      setIsSavingPenalty(true);
+      try {
+          await fetch('/api/os-penalties', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  companyId: config.id,
+                  osId: penalizingOrder.id,
+                  technicianId: penalizingOrder.technicianId,
+                  amount: Math.abs(parseFloat(penaltyForm.amount)), // Ensure positive value to be subtracted later
+                  reason: penaltyForm.reason
+              })
+          });
+
+          await fetchPenaltiesFromBackend(config.id);
+          setPenalizingOrder(null);
+          // fetchServiceOrders(); // Optional: refresh list if needed
+      } catch (e) {
+          alert('Erro ao salvar penalização');
+      } finally {
+          setIsSavingPenalty(false);
+      }
+  };
+
+  const deletePenalty = async (id: number) => {
+      if (!confirm('Tem certeza que deseja remover esta penalização?')) return;
+      const config = getApiConfig();
+      if (!config) return;
+      try {
+          await fetch(`/api/os-penalties/${id}`, { method: 'DELETE' });
+          await fetchPenaltiesFromBackend(config.id);
+      } catch (e) {
+          alert('Erro ao remover penalização');
+      }
+  };
+
   const getPointsForOrder = (order: ServiceOrder) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = scoreRules[order.subjectId]?.points || 0;
@@ -488,6 +553,12 @@ export const ScoreManagement: React.FC = () => {
             }
         }
     }
+
+    // Penalizações
+    const penalties = osPenalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+    const totalPenalty = penalties.reduce((sum, p) => sum + p.amount, 0);
+    points = points - totalPenalty;
+
     return points;
   };
 
@@ -750,6 +821,80 @@ export const ScoreManagement: React.FC = () => {
                       >
                           {isSavingSplit ? <Loader2 className="animate-spin" size={16}/> : <Save size={16} />} 
                           Salvar Divisão
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Modal de PENALIZAÇÃO */}
+      {penalizingOrder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-md flex flex-col">
+                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-red-50">
+                      <div>
+                        <h3 className="text-lg font-bold text-red-900 flex items-center gap-2"><Gavel size={20}/> Penalizar Técnico</h3>
+                        <p className="text-xs text-red-700">OS #{penalizingOrder.id} - {penalizingOrder.technicianName}</p>
+                      </div>
+                      <button onClick={() => setPenalizingOrder(null)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+                  </div>
+                  
+                  <div className="p-6 space-y-4">
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Valor da Penalização (Pontos)</label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            step="0.5"
+                            value={penaltyForm.amount}
+                            onChange={e => setPenaltyForm({...penaltyForm, amount: e.target.value})}
+                            className="w-full rounded-lg border-gray-300 border p-2 text-lg font-semibold text-red-600 focus:ring-red-500 focus:border-red-500"
+                            placeholder="Ex: 5"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Este valor será subtraído do total de pontos.</p>
+                      </div>
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Motivo</label>
+                          <textarea 
+                            value={penaltyForm.reason}
+                            onChange={e => setPenaltyForm({...penaltyForm, reason: e.target.value})}
+                            className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-red-500 focus:border-red-500"
+                            rows={3}
+                            placeholder="Descreva o motivo da penalização..."
+                          />
+                      </div>
+
+                      {/* Lista de Penalizações Existentes nesta OS */}
+                      <div className="mt-4 border-t pt-4">
+                          <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Penalizações Existentes</h4>
+                          <div className="space-y-2">
+                              {osPenalties.filter(p => p.osId === penalizingOrder.id && p.technicianId === penalizingOrder.technicianId).map(p => (
+                                  <div key={p.id} className="flex justify-between items-center bg-gray-50 p-2 rounded text-sm border border-gray-200">
+                                      <div>
+                                          <div className="font-medium text-red-700">-{p.amount} pts</div>
+                                          <div className="text-xs text-gray-500">{p.reason}</div>
+                                      </div>
+                                      <button onClick={() => deletePenalty(p.id)} className="text-gray-400 hover:text-red-600 p-1">
+                                          <Trash2 size={14} />
+                                      </button>
+                                  </div>
+                              ))}
+                              {osPenalties.filter(p => p.osId === penalizingOrder.id && p.technicianId === penalizingOrder.technicianId).length === 0 && (
+                                  <div className="text-xs text-gray-400 italic">Nenhuma penalização aplicada.</div>
+                              )}
+                          </div>
+                      </div>
+                  </div>
+
+                  <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+                      <button onClick={() => setPenalizingOrder(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Cancelar</button>
+                      <button 
+                        onClick={savePenalty} 
+                        disabled={isSavingPenalty || !penaltyForm.amount || !penaltyForm.reason}
+                        className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 flex items-center gap-2 disabled:opacity-50"
+                      >
+                          {isSavingPenalty ? <Loader2 className="animate-spin" size={16}/> : <Save size={16} />} 
+                          Salvar Penalização
                       </button>
                   </div>
               </div>
