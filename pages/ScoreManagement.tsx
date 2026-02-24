@@ -143,15 +143,23 @@ export const ScoreManagement: React.FC = () => {
   const fetchPenaltiesFromBackend = async (companyId: string) => {
       try {
           const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
+          const text = await res.text(); // Get text first to debug
+          
           if (res.ok) {
-              const data = await res.json();
-              if (Array.isArray(data)) {
-                  setOsPenalties(data);
-              } else {
-                  console.warn("API de penalidades não retornou um array:", data);
+              try {
+                  const data = JSON.parse(text);
+                  if (Array.isArray(data)) {
+                      setOsPenalties(data);
+                  } else {
+                      console.warn("API de penalidades não retornou um array:", data);
+                      setOsPenalties([]);
+                  }
+              } catch (e) {
+                  console.warn("API de penalidades retornou JSON inválido:", text);
                   setOsPenalties([]);
               }
           } else {
+              console.warn(`API de penalidades retornou erro ${res.status}: ${text}`);
               setOsPenalties([]);
           }
       } catch (e) { 
@@ -262,9 +270,17 @@ export const ScoreManagement: React.FC = () => {
     setIsLoading(true); setError(null); setCurrentPage(1);
 
     try {
-      // 1. Refresh Splits and Penalties before processing (to ensure latest state)
-      await fetchSplitsFromBackend(config.id);
-      await fetchPenaltiesFromBackend(config.id);
+      // 1. Refresh Splits and Penalties (Non-blocking attempt)
+      // Envolvemos em try/catch para garantir que falhas no banco local não impeçam a visualização dos dados do IXC
+      try {
+          await Promise.all([
+              fetchSplitsFromBackend(config.id),
+              fetchPenaltiesFromBackend(config.id)
+          ]);
+      } catch (localDbError) {
+          console.warn("Falha ao carregar dados locais (splits/penalties), continuando apenas com dados do IXC...", localDbError);
+          // Não definimos erro fatal aqui, apenas logamos
+      }
 
       const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
       const dateField = filters.dateType === 'closing' ? 'su_oss_chamado.data_fechamento' : 'su_oss_chamado.data_abertura';
@@ -655,7 +671,20 @@ export const ScoreManagement: React.FC = () => {
           )}
         </div>
       </div>
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-start gap-3"><ShieldAlert size={20} className="mt-0.5 shrink-0" /><div><p className="font-bold">Erro de Comunicação</p><p className="text-sm">{error}</p></div></div>}
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex flex-col gap-2">
+            <div className="flex items-start gap-3">
+                <ShieldAlert size={20} className="mt-0.5 shrink-0" />
+                <div>
+                    <p className="font-bold">Erro de Comunicação</p>
+                    <p className="text-sm">{error}</p>
+                </div>
+            </div>
+            <div className="text-xs text-red-500 font-mono bg-red-100 p-2 rounded overflow-x-auto">
+                Dica: Verifique se o servidor backend está rodando e se a conexão com o IXC está ativa.
+            </div>
+        </div>
+      )}
       
       {activeSubTab === 'technicians' && (
         <div className="space-y-6">

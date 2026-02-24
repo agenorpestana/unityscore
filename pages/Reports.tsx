@@ -158,11 +158,17 @@ export const Reports: React.FC = () => {
   const fetchPenaltiesFromBackend = async (companyId: string) => {
       try {
           const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
+          const text = await res.text();
+          
           if (res.ok) {
-              const data = await res.json();
-              if (Array.isArray(data)) {
-                  setOsPenalties(data);
-              } else {
+              try {
+                  const data = JSON.parse(text);
+                  if (Array.isArray(data)) {
+                      setOsPenalties(data);
+                  } else {
+                      setOsPenalties([]);
+                  }
+              } catch (e) {
                   setOsPenalties([]);
               }
           } else {
