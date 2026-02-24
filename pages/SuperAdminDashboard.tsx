@@ -62,6 +62,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogo
         if (plansRes.ok) {
             const plansData = await plansRes.json();
             setPlans(plansData);
+        } else {
+            const errData = await plansRes.json();
+            console.error("Erro ao buscar planos:", errData);
+            alert(`Erro no Banco de Dados (Planos): ${errData.error || 'Erro desconhecido'}`);
         }
 
         if (companiesRes.ok) {
@@ -78,6 +82,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogo
                 expirationDate: c.expiration_date
             }));
             setCompanies(normalizedCompanies);
+        } else {
+            const errData = await companiesRes.json();
+            console.error("Erro ao buscar empresas:", errData);
+            alert(`Erro no Banco de Dados (Empresas): ${errData.error || 'Erro desconhecido'}`);
         }
     } catch (e: any) {
         setError("Erro ao carregar dados do servidor: " + e.message);

@@ -426,11 +426,23 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.get('/api/saas/plans', async (req, res) => {
-    try { const [rows] = await pool.query('SELECT * FROM saas_plans'); res.json(rows); } catch (e) { res.status(500).json({error: e.message}); }
+    try { 
+        const [rows] = await pool.query('SELECT * FROM saas_plans'); 
+        res.json(rows); 
+    } catch (e) { 
+        console.error('Erro DB /api/saas/plans:', e);
+        res.status(500).json({error: e.message, code: e.code}); 
+    }
 });
 
 app.get('/api/saas/companies', async (req, res) => {
-    try { const [rows] = await pool.query(`SELECT c.*, p.name as plan_name FROM companies c LEFT JOIN saas_plans p ON c.plan_id = p.id ORDER BY c.created_at DESC`); res.json(rows); } catch (e) { res.status(500).json({error: e.message}); }
+    try { 
+        const [rows] = await pool.query(`SELECT c.*, p.name as plan_name FROM companies c LEFT JOIN saas_plans p ON c.plan_id = p.id ORDER BY c.created_at DESC`); 
+        res.json(rows); 
+    } catch (e) { 
+        console.error('Erro DB /api/saas/companies:', e);
+        res.status(500).json({error: e.message, code: e.code}); 
+    }
 });
 
 app.post('/api/saas/companies', async (req, res) => {
