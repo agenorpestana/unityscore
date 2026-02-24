@@ -27,8 +27,9 @@ const cleanEnv = (val) => {
 // Configuração do Banco de Dados (SaaS)
 const dbConfig = {
     host: cleanEnv(process.env.DB_HOST) || 'localhost',
-    user: cleanEnv(process.env.DB_USER) || 'root',
-    password: cleanEnv(process.env.DB_PASSWORD) || '',
+    user: cleanEnv(process.env.DB_USER) || 'unity_user',
+    // Fallback rígido para a senha caso o .env falhe na VPS
+    password: cleanEnv(process.env.DB_PASSWORD) || 'unity123.789',
     database: cleanEnv(process.env.DB_NAME) || 'unity_saas',
     waitForConnections: true,
     connectionLimit: 10,
