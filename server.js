@@ -2,17 +2,25 @@ const express = require('express');
 const path = require('path');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
-require('dotenv').config();
+
+// Força o carregamento do .env do diretório exato do script
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Função para limpar aspas que o script bash possa ter injetado no .env
+const cleanEnv = (val) => {
+    if (!val) return '';
+    return val.replace(/^["']|["']$/g, '');
+};
+
 // Configuração do Banco de Dados (SaaS)
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'unity_saas',
+    host: cleanEnv(process.env.DB_HOST) || 'localhost',
+    user: cleanEnv(process.env.DB_USER) || 'root',
+    password: cleanEnv(process.env.DB_PASSWORD) || '',
+    database: cleanEnv(process.env.DB_NAME) || 'unity_saas',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
