@@ -31,15 +31,18 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
            onLogin(data.user);
            return;
         } else {
-           throw new Error('Credenciais inválidas');
+           throw new Error(data.message || 'Credenciais inválidas');
         }
-      } else if (response.status === 404) {
-         // API não encontrada (talvez rodando só frontend dev)
-         throw new Error('Offline Mode');
       } else {
-         // Erro 401 ou 500
-         const errText = await response.json();
-         throw new Error(errText.message || 'Erro no login');
+         // Erro 401, 403, 500, etc.
+         let errorMessage = 'Erro no servidor';
+         try {
+             const errData = await response.json();
+             errorMessage = errData.message || errData.error || errorMessage;
+         } catch (parseErr) {
+             errorMessage = `Erro HTTP ${response.status}`;
+         }
+         throw new Error(errorMessage);
       }
     } catch (err: any) {
       console.log("Fallback login local:", err.message);
@@ -77,7 +80,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
       }
 
       setLoading(false);
-      setError('Credenciais inválidas ou erro de conexão.');
+      // Mostrar o erro real do backend se houver, senão mensagem genérica
+      setError(err.message || 'Credenciais inválidas ou erro de conexão.');
     }
   };
 
