@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, FileText, Clock, AlertCircle, CheckCircle, Split, Users, Gavel, Trash2 } from 'lucide-react';
+import { Search, Filter, Edit2, Save, X, RefreshCw, Trophy, Loader2, ShieldAlert, ChevronLeft, ChevronRight, FileText, Clock, AlertCircle, CheckCircle, Split, Users, Gavel, Trash2, AlertTriangle } from 'lucide-react';
 import { Technician, Subject, ServiceOrder, ScoreRule, Company, User, OsPenalty } from '../types';
 
 interface EmployeeMapItem {
