@@ -127,10 +127,17 @@ export const TvDashboard: React.FC = () => {
       return allRecords;
   };
 
-  const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>) => {
+  const getPoints = (order: ServiceOrder, rules: Record<string, ScoreRule>, osSplits: Record<string, string[]>, osPenalties: any[]) => {
     if (order.closingDate === 'EM ABERTO') return 0;
     let points = rules[order.subjectId]?.points || 0;
     
+    // Lógica de Divisão (Split)
+    const splitTechs = osSplits[order.id];
+    if (splitTechs && splitTechs.length > 0) {
+        const count = splitTechs.length;
+        points = Math.floor(points / count); // Divisão inteira, descarta resto
+    }
+
     // Lógica de Penalidade por Reabertura
     if (order.reopeningDate && order.reopeningDate !== '-') {
         const d1 = new Date(order.closingDate.split(' ')[0]);
@@ -138,6 +145,13 @@ export const TvDashboard: React.FC = () => {
         const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
         if (diffDays <= 30) points = -Math.abs(points);
     }
+
+    // Penalizações
+    const penaltiesList = Array.isArray(osPenalties) ? osPenalties : [];
+    const penalties = penaltiesList.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+    const totalPenalty = penalties.reduce((sum, p) => sum + p.amount, 0);
+    points = points - totalPenalty;
+
     return points;
   };
 
@@ -182,12 +196,25 @@ export const TvDashboard: React.FC = () => {
             setLogoUrl(config.logo);
         }
 
-        // --- 2. Load Rules ---
+        // --- 2. Load Rules, Splits and Penalties ---
         let rules = scoreRules;
         if (Object.keys(rules).length === 0) {
             const savedRules = localStorage.getItem('unity_score_rules');
             rules = savedRules ? JSON.parse(savedRules) : {};
             setScoreRules(rules);
+        }
+
+        let osSplits: Record<string, string[]> = {};
+        let osPenalties: any[] = [];
+        try {
+            const [splitsRes, penaltiesRes] = await Promise.all([
+                fetch(`/api/os-splits?companyId=${config.id}`, { signal: controller.signal }),
+                fetch(`/api/os-penalties?companyId=${config.id}`, { signal: controller.signal })
+            ]);
+            if (splitsRes.ok) osSplits = await splitsRes.json();
+            if (penaltiesRes.ok) osPenalties = await penaltiesRes.json();
+        } catch (e) {
+            console.error("Erro ao carregar splits/penalidades no TV Dashboard", e);
         }
 
         // --- 3. Get ALL Active Employees & Map Groups (Robust Fetch) ---
@@ -356,7 +383,7 @@ export const TvDashboard: React.FC = () => {
                 status: 'Fechado'
             };
 
-            const points = getPoints(orderObj, rules);
+            const points = getPoints(orderObj, rules, osSplits, osPenalties);
 
             // Chave única para agregação
             const uniqueKey = techName; 
