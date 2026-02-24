@@ -10,9 +10,9 @@ const PORT = process.env.PORT || 3001;
 // Configuração do Banco de Dados (SaaS)
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'unity_saas',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
