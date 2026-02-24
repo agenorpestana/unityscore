@@ -71,7 +71,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
           id: '1',
           name: 'Suporte Unity',
           email: 'suporte@unityautomacoes.com.br',
-          role: 'super_admin',
+          role: 'saas_owner', // Corrigido para saas_owner para ver o painel de empresas
           active: true,
           permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true }
         };

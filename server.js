@@ -33,9 +33,6 @@ const pool = mysql.createPool(dbConfig);
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Aumentado limite para imagens/logos
 
-// Servir arquivos estáticos do React
-app.use(express.static(path.join(__dirname, 'dist')));
-
 // --- INICIALIZAÇÃO E MIGRAÇÃO DO BANCO DE DADOS ---
 async function initDatabase() {
     let connection;
@@ -97,10 +94,14 @@ async function initDatabase() {
             console.error('❌ Erro ao criar tabela os_penalties:', penaltyTableError);
         }
 
-        const [users] = await connection.query("SELECT * FROM users WHERE email = ?", ['unity@unityautomacoes.com.br']);
+        const [users] = await connection.query("SELECT * FROM users WHERE email = ? OR email = ?", ['unity@unityautomacoes.com.br', 'suporte@unityautomacoes.com.br']);
         if (users.length === 0) {
-            console.log('👤 Criando usuário padrão Unity...');
+            console.log('👤 Criando usuários padrão Unity e Suporte...');
             await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Unity Admin', 'unity@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
+            await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Suporte Unity', 'suporte@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
+        } else if (users.length === 1 && users[0].email === 'unity@unityautomacoes.com.br') {
+            console.log('👤 Criando usuário Suporte...');
+            await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Suporte Unity', 'suporte@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
         }
 
         console.log('✅ Banco de dados inicializado/atualizado com sucesso!');
@@ -452,6 +453,9 @@ app.put('/api/saas/companies/:id', async (req, res) => {
 app.patch('/api/saas/companies/:id/status', async (req, res) => {
     try { await pool.query('UPDATE companies SET status = ? WHERE id = ?', [req.body.status, req.params.id]); res.json({ success: true }); } catch (e) { res.status(500).json({error: e.message}); }
 });
+
+// Servir arquivos estáticos do React (DEVE FICAR DEPOIS DAS ROTAS DA API)
+app.use(express.static(path.join(__dirname, 'dist')));
 
 app.get('*', (req, res) => { res.sendFile(path.join(__dirname, 'dist', 'index.html')); });
 app.listen(PORT, () => { console.log(`🚀 Server running on port ${PORT}`); });
