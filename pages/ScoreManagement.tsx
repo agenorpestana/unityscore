@@ -757,6 +757,11 @@ export const ScoreManagement: React.FC = () => {
                         <td className="px-6 py-4 text-center"><span className={`font-bold ${points > 0 ? 'text-brand-600' : points < 0 ? 'text-red-600' : 'text-gray-300'}`}>{points}</span></td>
                         <td className="px-6 py-4 text-right">
                             <div className="flex items-center justify-end gap-2">
+                                {!isEmployee && (
+                                    <button onClick={() => setPenalizingOrder(order)} title="Penalizar Técnico" className="text-red-600 hover:text-red-800 p-1 hover:bg-red-50 rounded transition-colors">
+                                        <AlertTriangle size={16} />
+                                    </button>
+                                )}
                                 {canSplit && (
                                     <button onClick={() => openSplitModal(order)} title="Dividir Pontos" className="text-purple-600 hover:text-purple-800 p-1 hover:bg-purple-50 rounded transition-colors">
                                         <Split size={16} />
