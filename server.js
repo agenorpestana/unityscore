@@ -2,9 +2,18 @@ const express = require('express');
 const path = require('path');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
+const fs = require('fs');
 
-// Força o carregamento do .env do diretório exato do script
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Tenta ler o .env manualmente para garantir que o PM2 não sobrescreva com variáveis vazias
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+    const envConfig = require('dotenv').parse(fs.readFileSync(envPath));
+    for (const k in envConfig) {
+        process.env[k] = envConfig[k];
+    }
+} else {
+    require('dotenv').config();
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -12,7 +21,7 @@ const PORT = process.env.PORT || 3001;
 // Função para limpar aspas que o script bash possa ter injetado no .env
 const cleanEnv = (val) => {
     if (!val) return '';
-    return val.replace(/^["']|["']$/g, '');
+    return val.replace(/^["']|["']$/g, '').trim();
 };
 
 // Configuração do Banco de Dados (SaaS)
@@ -25,6 +34,8 @@ const dbConfig = {
     connectionLimit: 10,
     queueLimit: 0
 };
+
+console.log(`Tentando conectar ao banco: ${dbConfig.user}@${dbConfig.host} no banco ${dbConfig.database} (Senha configurada: ${dbConfig.password ? 'SIM' : 'NÃO'})`);
 
 // Pool de conexão
 const pool = mysql.createPool(dbConfig);
