@@ -143,9 +143,8 @@ export const ScoreManagement: React.FC = () => {
   const fetchPenaltiesFromBackend = async (companyId: string) => {
       try {
           const res = await fetch(`/api/os-penalties?companyId=${companyId}`);
-          const text = await res.text(); // Get text first to debug
-          
           if (res.ok) {
+              const text = await res.text();
               try {
                   const data = JSON.parse(text);
                   if (Array.isArray(data)) {
@@ -159,11 +158,11 @@ export const ScoreManagement: React.FC = () => {
                   setOsPenalties([]);
               }
           } else {
-              console.warn(`API de penalidades retornou erro ${res.status}: ${text}`);
+              console.warn(`API de penalidades retornou erro ${res.status}`);
               setOsPenalties([]);
           }
       } catch (e) { 
-          console.error("Erro ao carregar penalizações", e); 
+          console.error("Erro ao carregar penalizações (rede/cors):", e); 
           setOsPenalties([]);
       }
   };

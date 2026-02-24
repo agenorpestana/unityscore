@@ -82,7 +82,12 @@ async function initDatabase() {
         await connection.query(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
 
         // Tabela de Penalizações (Penalties)
-        await connection.query(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+        try {
+            await connection.query(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+            console.log('✅ Tabela os_penalties verificada/criada com sucesso.');
+        } catch (penaltyTableError) {
+            console.error('❌ Erro ao criar tabela os_penalties:', penaltyTableError);
+        }
 
         const [users] = await connection.query("SELECT * FROM users WHERE email = ?", ['unity@unityautomacoes.com.br']);
         if (users.length === 0) {
@@ -338,7 +343,11 @@ app.get('/api/os-penalties', async (req, res) => {
             createdAt: row.created_at
         }));
         res.json(penalties);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { 
+        console.error('Erro na rota GET /api/os-penalties:', e);
+        // Retorna array vazio em caso de erro para não quebrar o frontend
+        res.status(200).json([]); 
+    }
 });
 
 // Salvar Penalização
