@@ -216,9 +216,17 @@ export const Reports: React.FC = () => {
       return allRecords;
   };
 
+  const fetchRulesFromBackend = async (companyId: string) => {
+      try {
+          const res = await fetch(`/api/score-rules?companyId=${companyId}`);
+          if (res.ok) {
+              const dbRules = await res.json();
+              setScoreRules(dbRules);
+          }
+      } catch (e) { console.error("Erro ao carregar regras", e); }
+  };
+
   useEffect(() => {
-    const savedRules = localStorage.getItem('unity_score_rules');
-    if (savedRules) setScoreRules(JSON.parse(savedRules));
     fetchTechnicians();
   }, [getApiConfig]);
 
@@ -226,6 +234,7 @@ export const Reports: React.FC = () => {
     const config = getApiConfig();
     if (!config) return;
 
+    fetchRulesFromBackend(config.id);
     fetchSplitsFromBackend(config.id);
     fetchPenaltiesFromBackend(config.id);
 
