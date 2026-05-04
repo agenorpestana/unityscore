@@ -198,23 +198,32 @@ export const TvDashboard: React.FC = () => {
 
         // --- 2. Load Rules, Splits and Penalties ---
         let rules = scoreRules;
-        if (Object.keys(rules).length === 0) {
-            const savedRules = localStorage.getItem('unity_score_rules');
-            rules = savedRules ? JSON.parse(savedRules) : {};
-            setScoreRules(rules);
-        }
-
         let osSplits: Record<string, string[]> = {};
         let osPenalties: any[] = [];
         try {
-            const [splitsRes, penaltiesRes] = await Promise.all([
+            const [rulesRes, splitsRes, penaltiesRes] = await Promise.all([
+                fetch(`/api/score-rules?companyId=${config.id}`, { signal: controller.signal }),
                 fetch(`/api/os-splits?companyId=${config.id}`, { signal: controller.signal }),
                 fetch(`/api/os-penalties?companyId=${config.id}`, { signal: controller.signal })
             ]);
+            
+            if (rulesRes.ok) {
+                const dbRules = await rulesRes.json();
+                rules = dbRules;
+                setScoreRules(dbRules);
+            } else {
+                // Tentar localStorage como fallback se falhar
+                const savedRules = localStorage.getItem('unity_score_rules');
+                rules = savedRules ? JSON.parse(savedRules) : {};
+            }
+            
             if (splitsRes.ok) osSplits = await splitsRes.json();
             if (penaltiesRes.ok) osPenalties = await penaltiesRes.json();
         } catch (e) {
-            console.error("Erro ao carregar splits/penalidades no TV Dashboard", e);
+            console.error("Erro ao carregar regras/splits/penalidades no TV Dashboard", e);
+            const savedRules = localStorage.getItem('unity_score_rules');
+            rules = savedRules ? JSON.parse(savedRules) : {};
+            setScoreRules(rules);
         }
 
         // --- 3. Get ALL Active Employees & Map Groups (Robust Fetch) ---
