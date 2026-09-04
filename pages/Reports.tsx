@@ -337,8 +337,10 @@ export const Reports: React.FC = () => {
       const rMap = new Map<string, ResponseItem>();
       respList.forEach(r => rMap.set(r.id, r));
       setResponsesMap(rMap);
+      return { subList, respList, sMap, rMap };
     } catch (err) {
       console.error("Erro ao carregar assuntos e respostas:", err);
+      return null;
     } finally {
       setLoadingSubjectsAndResponses(false);
     }
@@ -867,8 +869,17 @@ export const Reports: React.FC = () => {
     setSubjectPage(1);
 
     // Certificar que assuntos e respostas estejam carregados
+    let currentResponsesMap = responsesMap;
+    let currentSubjectsMap = subjectsMap;
+    let currentAvailableResponses = availableResponses;
+
     if (availableSubjects.length === 0 || availableResponses.length === 0) {
-      await fetchSubjectsAndResponses(config);
+      const loaded = await fetchSubjectsAndResponses(config);
+      if (loaded) {
+        currentResponsesMap = loaded.rMap;
+        currentSubjectsMap = loaded.sMap;
+        currentAvailableResponses = loaded.respList;
+      }
     }
 
     try {
@@ -972,25 +983,46 @@ export const Reports: React.FC = () => {
         }
 
         // Mapeamento do Assunto
-        const subj = subjectsMap.get(osSubjectId);
+        const subj = currentSubjectsMap.get(osSubjectId);
         const subjectTitle = subj?.assunto || (osSubjectId ? `Assunto #${osSubjectId}` : 'Sem Assunto');
 
-        // Mapeamento da Resposta Padrão do Assunto
+        // Resposta direta vinculada na OS (se existir no chamado)
+        const directRespId = String(
+          reg.id_resposta || 
+          reg.id_resposta_padrao || 
+          reg.id_resposta_finalizacao || 
+          reg.id_resposta_padrao_finalizacao || 
+          ''
+        );
+
+        // Resposta padrão cadastrada no Assunto
         const defaultRespId = String(subj?.id_resposta_padrao || subj?.id_resposta_padrao_finalizacao || '');
-        const respObj = responsesMap.get(defaultRespId);
+
+        // Se o usuário filtrou por uma Resposta específica
+        const selectedRespObj = subjectFilters.responseId ? currentResponsesMap.get(subjectFilters.responseId) : undefined;
+
+        // Tentar encontrar resposta automática por correspondência de mensagem
+        let matchedRespByMsg: ResponseItem | undefined = undefined;
+        if (reg.mensagem_resposta && reg.mensagem_resposta.trim()) {
+          const lowerMsg = reg.mensagem_resposta.toLowerCase().trim();
+          const sortedResponses = [...currentAvailableResponses].sort((a, b) => b.titulo.length - a.titulo.length);
+          matchedRespByMsg = sortedResponses.find(r => 
+            r.titulo && r.titulo.trim().length >= 2 && lowerMsg.includes(r.titulo.toLowerCase().trim())
+          );
+        }
 
         // Validação de Filtro de Resposta
         if (subjectFilters.responseId) {
+          const matchDirectId = directRespId === subjectFilters.responseId;
           const matchDefaultId = defaultRespId === subjectFilters.responseId;
-          const matchRespObj = respObj?.id === subjectFilters.responseId;
-          const selectedRespObj = responsesMap.get(subjectFilters.responseId);
-          const matchMsg = Boolean(
+          const matchByMsg = Boolean(
             selectedRespObj && 
             reg.mensagem_resposta && 
-            reg.mensagem_resposta.toLowerCase().includes(selectedRespObj.titulo.toLowerCase())
+            reg.mensagem_resposta.toLowerCase().includes(selectedRespObj.titulo.toLowerCase().trim())
           );
+          const matchDetectedId = matchedRespByMsg?.id === subjectFilters.responseId;
 
-          if (!matchDefaultId && !matchRespObj && !matchMsg) {
+          if (!matchDirectId && !matchDefaultId && !matchByMsg && !matchDetectedId) {
             continue;
           }
         }
@@ -1000,21 +1032,37 @@ export const Reports: React.FC = () => {
         let respTitle = 'Sem Resposta';
         let respContent = reg.mensagem_resposta || '';
 
-        if (respObj) {
-          respId = respObj.id;
-          respTitle = respObj.titulo;
-          if (!respContent) {
-            respContent = respObj.resposta;
-          }
+        // Se o usuário filtrou por uma resposta específica, o campo ID / TÍTULO DA RESPOSTA recebe ela
+        if (subjectFilters.responseId && selectedRespObj) {
+          respId = selectedRespObj.id;
+          respTitle = selectedRespObj.titulo;
+        } else if (directRespId && currentResponsesMap.has(directRespId)) {
+          const rObj = currentResponsesMap.get(directRespId)!;
+          respId = rObj.id;
+          respTitle = rObj.titulo;
+        } else if (matchedRespByMsg) {
+          respId = matchedRespByMsg.id;
+          respTitle = matchedRespByMsg.titulo;
+        } else if (defaultRespId && currentResponsesMap.has(defaultRespId)) {
+          const rObj = currentResponsesMap.get(defaultRespId)!;
+          respId = rObj.id;
+          respTitle = rObj.titulo;
+        } else if (directRespId && directRespId !== '0') {
+          respId = directRespId;
+          respTitle = `Resposta #${directRespId}`;
         } else if (defaultRespId && defaultRespId !== '0') {
           respId = defaultRespId;
           respTitle = `Resposta #${defaultRespId}`;
-        } else if (reg.mensagem_resposta) {
+        } else if (reg.mensagem_resposta && reg.mensagem_resposta.trim()) {
           respTitle = 'Resposta Registrada na OS';
         }
 
         if (!respContent || respContent.trim() === '') {
-          respContent = '-';
+          if (respId !== '-' && currentResponsesMap.has(respId)) {
+            respContent = currentResponsesMap.get(respId)!.resposta || '-';
+          } else {
+            respContent = '-';
+          }
         }
 
         const clientId = reg.id_cliente ? String(reg.id_cliente) : '';
@@ -1613,10 +1661,10 @@ export const Reports: React.FC = () => {
                       Período: {new Date(subjectFilters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} até {new Date(subjectFilters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} • 
                       Filtrado por Data de: <span className="font-semibold text-gray-700">{subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}</span>
                       {subjectFilters.subjectId && (
-                        <span> • Assunto: #{subjectFilters.subjectId}</span>
+                        <span> • Assunto: [#{subjectFilters.subjectId}] {subjectsMap.get(subjectFilters.subjectId)?.assunto || ''}</span>
                       )}
                       {subjectFilters.responseId && (
-                        <span> • Resposta: #{subjectFilters.responseId}</span>
+                        <span> • Resposta: [#{subjectFilters.responseId}] {responsesMap.get(subjectFilters.responseId)?.titulo || ''}</span>
                       )}
                     </p>
                   </div>
@@ -1697,15 +1745,13 @@ export const Reports: React.FC = () => {
                             {/* ID e Título da Resposta */}
                             <td className="px-4 py-3">
                               {row.responseId !== '-' ? (
-                                <div className="flex flex-col gap-0.5">
-                                  <div className="flex items-center gap-1">
-                                    <span className="bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded text-[11px] font-mono font-bold">
-                                      #{row.responseId}
-                                    </span>
-                                    <span className="text-xs font-semibold text-gray-800">
-                                      {row.responseTitle}
-                                    </span>
-                                  </div>
+                                <div className="flex items-start gap-1.5">
+                                  <span className="bg-purple-50 text-purple-700 border border-purple-100 px-2 py-0.5 rounded text-xs font-mono font-bold shrink-0">
+                                    #{row.responseId}
+                                  </span>
+                                  <span className="text-gray-800 text-xs font-semibold leading-relaxed">
+                                    {row.responseTitle}
+                                  </span>
                                 </div>
                               ) : (
                                 <span className="text-xs text-gray-400 italic">
