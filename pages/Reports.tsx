@@ -1,5 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Filter, FileText, Loader2, AlertTriangle, Printer, Database, Info, ShieldAlert, Gavel } from 'lucide-react';
+import { 
+  Filter, 
+  FileText, 
+  Loader2, 
+  AlertTriangle, 
+  Printer, 
+  Database, 
+  Info, 
+  ShieldAlert, 
+  Gavel,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Tag,
+  MessageSquare
+} from 'lucide-react';
 import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty } from '../types';
 
 interface ReportFilter {
@@ -10,6 +25,41 @@ interface ReportFilter {
   function: string; 
   type: 'SYNTHETIC' | 'ANALYTICAL';
   dateType: 'opening' | 'closing';
+}
+
+export interface SubjectReportFilter {
+  startDate: string;
+  endDate: string;
+  dateType: 'closing' | 'opening';
+  subjectId: string;
+  responseId: string;
+}
+
+export interface SubjectItem {
+  id: string;
+  assunto: string;
+  id_resposta_padrao?: string;
+  id_resposta_padrao_finalizacao?: string;
+}
+
+export interface ResponseItem {
+  id: string;
+  titulo: string;
+  resposta: string;
+}
+
+export interface SubjectReportRow {
+  osId: string;
+  clientId: string;
+  clientName: string;
+  subjectId: string;
+  subjectTitle: string;
+  responseId: string;
+  responseTitle: string;
+  responseContent: string;
+  openingDate: string;
+  closingDate: string;
+  status: string;
 }
 
 interface ReportData {
@@ -58,6 +108,9 @@ export const Reports: React.FC = () => {
     return `${year}-${month}-${day}`;
   };
 
+  // Sub-abas de relatórios
+  const [activeSubTab, setActiveSubTab] = useState<'employees' | 'subjects'>('employees');
+
   const [filters, setFilters] = useState<ReportFilter>({
     startDate: getTodayLocal(),
     endDate: getTodayLocal(),
@@ -67,6 +120,32 @@ export const Reports: React.FC = () => {
     type: 'SYNTHETIC',
     dateType: 'closing'
   });
+
+  // Filtros de Relatórios por Assunto
+  const [subjectFilters, setSubjectFilters] = useState<SubjectReportFilter>({
+    startDate: getTodayLocal(),
+    endDate: getTodayLocal(),
+    dateType: 'closing',
+    subjectId: '',
+    responseId: ''
+  });
+
+  // Dados auxiliares para Assuntos e Respostas
+  const [availableSubjects, setAvailableSubjects] = useState<SubjectItem[]>([]);
+  const [availableResponses, setAvailableResponses] = useState<ResponseItem[]>([]);
+  const [subjectsMap, setSubjectsMap] = useState<Map<string, SubjectItem>>(new Map());
+  const [responsesMap, setResponsesMap] = useState<Map<string, ResponseItem>>(new Map());
+  const [loadingSubjectsAndResponses, setLoadingSubjectsAndResponses] = useState(false);
+
+  // Resultado do Relatório por Assunto
+  const [subjectReportData, setSubjectReportData] = useState<SubjectReportRow[] | null>(null);
+  const [isLoadingSubject, setIsLoadingSubject] = useState(false);
+  const [loadingProgressSubject, setLoadingProgressSubject] = useState<string>('');
+  const [subjectError, setSubjectError] = useState<string | null>(null);
+  const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
+  const [expandedResponseOsId, setExpandedResponseOsId] = useState<string | null>(null);
+  const [subjectPage, setSubjectPage] = useState(1);
+  const SUBJECT_PAGE_SIZE = 50;
 
   const [technicians, setTechnicians] = useState<(Technician & { role?: string })[]>([]);
   
@@ -96,6 +175,7 @@ export const Reports: React.FC = () => {
   const [permissionWarning, setPermissionWarning] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const subjectAbortControllerRef = useRef<AbortController | null>(null);
 
   const formatDateBR = (dateString: string | undefined | null) => {
     if (!dateString || dateString === '0000-00-00 00:00:00' || dateString === '-') return '-';
@@ -226,6 +306,44 @@ export const Reports: React.FC = () => {
       } catch (e) { console.error("Erro ao carregar regras", e); }
   };
 
+  const fetchSubjectsAndResponses = async (config: any) => {
+    setLoadingSubjectsAndResponses(true);
+    try {
+      const [subsData, respsData] = await Promise.all([
+        fetchAllRecords(config, '/webservice/v1/su_oss_assunto', 'su_oss_assunto.id'),
+        fetchAllRecords(config, '/webservice/v1/su_oss_respostas', 'su_oss_respostas.id')
+      ]);
+
+      const subList: SubjectItem[] = subsData.map((s: any) => ({
+        id: String(s.id),
+        assunto: s.assunto || s.descricao || `Assunto #${s.id}`,
+        id_resposta_padrao: s.id_resposta_padrao ? String(s.id_resposta_padrao) : '',
+        id_resposta_padrao_finalizacao: s.id_resposta_padrao_finalizacao ? String(s.id_resposta_padrao_finalizacao) : ''
+      })).sort((a, b) => a.assunto.localeCompare(b.assunto));
+
+      const respList: ResponseItem[] = respsData.map((r: any) => ({
+        id: String(r.id),
+        titulo: r.titulo || r.descricao || `Resposta #${r.id}`,
+        resposta: r.resposta || ''
+      })).sort((a, b) => a.titulo.localeCompare(b.titulo));
+
+      setAvailableSubjects(subList);
+      setAvailableResponses(respList);
+
+      const sMap = new Map<string, SubjectItem>();
+      subList.forEach(s => sMap.set(s.id, s));
+      setSubjectsMap(sMap);
+
+      const rMap = new Map<string, ResponseItem>();
+      respList.forEach(r => rMap.set(r.id, r));
+      setResponsesMap(rMap);
+    } catch (err) {
+      console.error("Erro ao carregar assuntos e respostas:", err);
+    } finally {
+      setLoadingSubjectsAndResponses(false);
+    }
+  };
+
   useEffect(() => {
     fetchTechnicians();
   }, [getApiConfig]);
@@ -237,6 +355,7 @@ export const Reports: React.FC = () => {
     fetchRulesFromBackend(config.id);
     fetchSplitsFromBackend(config.id);
     fetchPenaltiesFromBackend(config.id);
+    fetchSubjectsAndResponses(config);
 
     try {
       // 1. Tentar buscar Funções (Cargos de RH)
@@ -727,6 +846,255 @@ export const Reports: React.FC = () => {
     }
   };
 
+  // --- GERADOR DO RELATÓRIO POR ASSUNTO ---
+  const handleGenerateSubjectReport = async () => {
+    if (subjectAbortControllerRef.current) {
+      subjectAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    subjectAbortControllerRef.current = controller;
+
+    const config = getApiConfig();
+    if (!config) { 
+      setSubjectError('Configure a API nas configurações da empresa.'); 
+      return; 
+    }
+
+    setIsLoadingSubject(true);
+    setLoadingProgressSubject('Buscando ordens de serviço...');
+    setSubjectReportData(null);
+    setSubjectError(null);
+    setSubjectPage(1);
+
+    // Certificar que assuntos e respostas estejam carregados
+    if (availableSubjects.length === 0 || availableResponses.length === 0) {
+      await fetchSubjectsAndResponses(config);
+    }
+
+    try {
+      const url = buildUrl(config, '/webservice/v1/su_oss_chamado');
+      const dateField = subjectFilters.dateType === 'closing' 
+        ? 'su_oss_chamado.data_fechamento' 
+        : 'su_oss_chamado.data_abertura';
+
+      let allDateRegistros: any[] = [];
+      let page = 1;
+      let fetchedAll = false;
+      const MAX_PAGES = 100;
+      const PAGE_SIZE = 500;
+
+      while (!fetchedAll && page <= MAX_PAGES) {
+        if (controller.signal.aborted) break;
+        setLoadingProgressSubject(`Buscando página ${page}... (${allDateRegistros.length} registros)`);
+
+        await new Promise(r => setTimeout(r, 150));
+
+        const dateData = await safeFetch(url, {
+          method: 'POST',
+          headers: config.headers,
+          body: JSON.stringify({
+            qtype: dateField,
+            query: subjectFilters.startDate,
+            oper: '>=',
+            rp: String(PAGE_SIZE),
+            page: String(page),
+            sortname: dateField,
+            sortorder: 'desc'
+          }),
+          signal: controller.signal
+        });
+
+        const records = dateData.registros || [];
+        allDateRegistros = [...allDateRegistros, ...records];
+
+        if (records.length < PAGE_SIZE) {
+          fetchedAll = true;
+        } else {
+          page++;
+        }
+      }
+
+      if (controller.signal.aborted) return;
+
+      // Se for fechamento, buscar também possíveis OS em andamento/fechadas
+      if (subjectFilters.dateType === 'closing') {
+        try {
+          const activeData = await safeFetch(url, {
+            method: 'POST',
+            headers: config.headers,
+            body: JSON.stringify({
+              qtype: 'su_oss_chamado.status',
+              query: 'EN',
+              oper: '=',
+              rp: '200',
+              sortname: 'su_oss_chamado.id',
+              sortorder: 'desc'
+            }),
+            signal: controller.signal
+          });
+          if (activeData.registros && Array.isArray(activeData.registros)) {
+            allDateRegistros = [...allDateRegistros, ...activeData.registros];
+          }
+        } catch (e) {
+          // Ignorar erro do status EN
+        }
+      }
+
+      // Remover duplicatas
+      const uniqueMap = new Map();
+      allDateRegistros.forEach((item: any) => uniqueMap.set(String(item.id), item));
+      const uniqueOrders = Array.from(uniqueMap.values());
+
+      setLoadingProgressSubject('Filtrando e processando assuntos e respostas...');
+
+      const rows: SubjectReportRow[] = [];
+      const clientIdsToResolve = new Set<string>();
+
+      for (const reg of uniqueOrders) {
+        // Validação de Data
+        const rawDate = subjectFilters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
+        
+        if (subjectFilters.dateType === 'closing') {
+          if (!rawDate || rawDate === '0000-00-00 00:00:00') {
+            continue; // Se filtrou por fechamento, descarta OS em aberto
+          }
+        }
+
+        const relevantDate = (rawDate || '').split(' ')[0];
+        if (relevantDate < subjectFilters.startDate || relevantDate > subjectFilters.endDate) {
+          continue;
+        }
+
+        // Validação de Assunto
+        const osSubjectId = reg.id_assunto ? String(reg.id_assunto) : '';
+        if (subjectFilters.subjectId && subjectFilters.subjectId !== osSubjectId) {
+          continue;
+        }
+
+        // Mapeamento do Assunto
+        const subj = subjectsMap.get(osSubjectId);
+        const subjectTitle = subj?.assunto || (osSubjectId ? `Assunto #${osSubjectId}` : 'Sem Assunto');
+
+        // Mapeamento da Resposta Padrão do Assunto
+        const defaultRespId = String(subj?.id_resposta_padrao || subj?.id_resposta_padrao_finalizacao || '');
+        const respObj = responsesMap.get(defaultRespId);
+
+        // Validação de Filtro de Resposta
+        if (subjectFilters.responseId) {
+          const matchDefaultId = defaultRespId === subjectFilters.responseId;
+          const matchRespObj = respObj?.id === subjectFilters.responseId;
+          const selectedRespObj = responsesMap.get(subjectFilters.responseId);
+          const matchMsg = Boolean(
+            selectedRespObj && 
+            reg.mensagem_resposta && 
+            reg.mensagem_resposta.toLowerCase().includes(selectedRespObj.titulo.toLowerCase())
+          );
+
+          if (!matchDefaultId && !matchRespObj && !matchMsg) {
+            continue;
+          }
+        }
+
+        // ID e Título da Resposta
+        let respId = '-';
+        let respTitle = 'Sem Resposta';
+        let respContent = reg.mensagem_resposta || '';
+
+        if (respObj) {
+          respId = respObj.id;
+          respTitle = respObj.titulo;
+          if (!respContent) {
+            respContent = respObj.resposta;
+          }
+        } else if (defaultRespId && defaultRespId !== '0') {
+          respId = defaultRespId;
+          respTitle = `Resposta #${defaultRespId}`;
+        } else if (reg.mensagem_resposta) {
+          respTitle = 'Resposta Registrada na OS';
+        }
+
+        if (!respContent || respContent.trim() === '') {
+          respContent = '-';
+        }
+
+        const clientId = reg.id_cliente ? String(reg.id_cliente) : '';
+        if (clientId) {
+          clientIdsToResolve.add(clientId);
+        }
+
+        let statusText = 'Em Andamento';
+        if (reg.status === 'F') statusText = 'Fechado';
+        else if (reg.status === 'A') statusText = 'Aberto';
+        else if (reg.status === 'EN') statusText = 'Encaminhado';
+
+        rows.push({
+          osId: String(reg.id),
+          clientId: clientId,
+          clientName: clientCache[clientId] || (clientId ? `Cliente #${clientId}` : 'Não Informado'),
+          subjectId: osSubjectId,
+          subjectTitle: subjectTitle,
+          responseId: respId,
+          responseTitle: respTitle,
+          responseContent: respContent,
+          openingDate: reg.data_abertura || '-',
+          closingDate: reg.data_fechamento && reg.data_fechamento !== '0000-00-00 00:00:00' ? reg.data_fechamento : 'EM ABERTO',
+          status: statusText
+        });
+      }
+
+      // Ordenar por ID decrescente
+      rows.sort((a, b) => Number(b.osId) - Number(a.osId));
+
+      setSubjectReportData(rows);
+
+      // Resolver nomes de clientes
+      if (clientIdsToResolve.size > 0 && !controller.signal.aborted) {
+        const idsNeeded = Array.from(clientIdsToResolve).filter(id => !clientCache[id]);
+        if (idsNeeded.length > 0) {
+          setLoadingProgressSubject('Buscando nomes de clientes...');
+          await resolveClients(idsNeeded, controller.signal);
+        }
+      }
+
+    } catch (e: any) {
+      if (e.message !== 'Busca cancelada.') {
+        console.error(e);
+        setSubjectError(`Erro ao gerar relatório por assunto: ${e.message}`);
+      }
+    } finally {
+      if (subjectAbortControllerRef.current === controller) {
+        setIsLoadingSubject(false);
+        setLoadingProgressSubject('');
+      }
+    }
+  };
+
+  // Filtragem local rápida para a tabela do Relatório por Assunto
+  const filteredSubjectRows = React.useMemo(() => {
+    if (!subjectReportData) return [];
+    if (!subjectSearchQuery.trim()) return subjectReportData;
+
+    const query = subjectSearchQuery.toLowerCase().trim();
+    return subjectReportData.filter(row => {
+      const cName = (clientCache[row.clientId] || row.clientName).toLowerCase();
+      return (
+        row.osId.includes(query) ||
+        row.clientId.includes(query) ||
+        cName.includes(query) ||
+        row.subjectTitle.toLowerCase().includes(query) ||
+        row.responseTitle.toLowerCase().includes(query) ||
+        row.responseContent.toLowerCase().includes(query) ||
+        row.status.toLowerCase().includes(query)
+      );
+    });
+  }, [subjectReportData, subjectSearchQuery, clientCache]);
+
+  const totalSubjectPages = Math.ceil(filteredSubjectRows.length / SUBJECT_PAGE_SIZE) || 1;
+  const paginatedSubjectRows = filteredSubjectRows.slice(
+    (subjectPage - 1) * SUBJECT_PAGE_SIZE,
+    subjectPage * SUBJECT_PAGE_SIZE
+  );
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <style>{`
@@ -738,93 +1106,709 @@ export const Reports: React.FC = () => {
         }
       `}</style>
 
-      <div className="flex justify-between items-center mb-6 no-print">
-          <div><h2 className="text-2xl font-bold text-gray-800">Relatórios de Pontuação</h2><p className="text-gray-500">Gere relatórios sintéticos ou analíticos da performance da equipe.</p></div>
-          <div className="flex flex-col items-end gap-1">
-             <div className={`text-xs flex items-center gap-1 font-medium ${dbStats.groups === 0 && dbStats.loaded ? 'text-red-500' : 'text-gray-400'}`}>
-                 <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.groups} Grupos
+      {/* Header com Sub-abas */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-2 no-print">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800">Relatórios</h2>
+            <p className="text-gray-500 text-sm">Gere relatórios sintéticos ou analíticos por funcionário ou por assunto.</p>
+          </div>
+
+          <div className="flex flex-col items-end gap-2">
+             <div className="flex bg-gray-100 p-1 rounded-xl shadow-inner border border-gray-200">
+                <button 
+                  onClick={() => setActiveSubTab('employees')} 
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                    activeSubTab === 'employees' 
+                      ? 'bg-white text-brand-600 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <FileText size={16} />
+                  Por Funcionário
+                </button>
+                <button 
+                  onClick={() => setActiveSubTab('subjects')} 
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                    activeSubTab === 'subjects' 
+                      ? 'bg-white text-brand-600 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Tag size={16} />
+                  Relatórios por Assunto
+                </button>
              </div>
-             {permissionWarning && (
-                 <div className="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1" title={permissionWarning}>
-                     <ShieldAlert size={10} /> 
-                     <span>{permissionWarning}</span>
-                 </div>
-             )}
+
+             <div className="flex items-center gap-2">
+               <div className={`text-xs flex items-center gap-1 font-medium ${dbStats.groups === 0 && dbStats.loaded ? 'text-red-500' : 'text-gray-400'}`}>
+                   <Database size={12} /> BD: {dbStats.emps} Func / {dbStats.users} Usuários / {dbStats.groups} Grupos
+               </div>
+               {permissionWarning && (
+                   <div className="text-[10px] text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100 flex items-center gap-1" title={permissionWarning}>
+                       <ShieldAlert size={10} /> 
+                       <span>{permissionWarning}</span>
+                   </div>
+               )}
+             </div>
           </div>
       </div>
-      
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print"><h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><Filter size={20} className="text-brand-600" /> Filtros do Relatório</h3><div className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label><input type="date" value={filters.startDate} onChange={e => setFilters({...filters, startDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label><input type="date" value={filters.endDate} onChange={e => setFilters({...filters, endDate: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm" /></div></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label><select value={filters.dateType} onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50"><option value="closing">Fechamento</option><option value="opening">Abertura</option></select></div><div><label className="block text-xs font-medium text-gray-500 mb-1">Organizar por</label><select value={filters.sortBy} onChange={e => setFilters({...filters, sortBy: e.target.value as any})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="NAME">Nome do Técnico</option><option value="POINTS">Maior Pontuação</option></select></div></div><div className="space-y-4"><div><label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Técnico</label><select value={filters.technicianId} onChange={e => setFilters({...filters, technicianId: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODOS OS TÉCNICOS</option>{technicians.map((t, idx) => (<option key={`${t.id}-${idx}`} value={t.id}>{t.name}</option>))}</select></div><div><label className="block text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">Função (Grupo/Cargo) {permissionWarning && <span className="text-yellow-500 cursor-help" title={permissionWarning}><AlertTriangle size={12} /></span>}</label><select value={filters.function} onChange={e => setFilters({...filters, function: e.target.value})} className="w-full rounded-lg border-gray-300 border p-2 text-sm"><option value="">TODAS AS FUNÇÕES</option>{availableFunctions.map((f, i) => (<option key={i} value={f}>{f}</option>))}</select></div></div><div className="flex flex-col justify-between"><div><label className="block text-xs font-medium text-gray-500 mb-2">Tipo de Relatório</label><div className="flex items-center gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'SYNTHETIC'} onChange={() => setFilters({...filters, type: 'SYNTHETIC'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Sintético</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={filters.type === 'ANALYTICAL'} onChange={() => setFilters({...filters, type: 'ANALYTICAL'})} className="text-brand-600 focus:ring-brand-500" /><span className="text-sm text-gray-700">Analítico</span></label></div></div><button onClick={handleGenerate} disabled={isLoading} className="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70">{isLoading ? <><Loader2 className="animate-spin" size={18} /><span>{loadingProgress || 'Processando...'}</span></> : <><FileText size={18} /> GERAR RELATÓRIO</>}</button></div></div></div>
-      {error && <div className="bg-red-50 text-red-700 p-4 rounded-lg flex items-center gap-2 border border-red-200"><AlertTriangle size={20} />{error}</div>}
-      {reportData && (
-        <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-          <div className="bg-gray-50 p-4 border-b border-gray-200 flex justify-between items-center"><div><h3 className="font-bold text-gray-800 text-lg">Relatório de Pontuação por Funcionário ({filters.type === 'SYNTHETIC' ? 'Sintético' : 'Analítico'})</h3><p className="text-sm text-gray-500">Período: {new Date(filters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} até {new Date(filters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</p></div><div className="flex gap-2"><button onClick={handlePrint} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 bg-white border border-gray-300 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors no-print"><Printer size={16} /> Imprimir</button></div></div>
-          <div className="p-0 overflow-x-auto">
-            {filters.type === 'SYNTHETIC' ? (
-              <table className="w-full text-left">
-                <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase"><tr><th className="px-6 py-3">Nome do Funcionário</th><th className="px-6 py-3">Função</th><th className="px-6 py-3 text-center">Total de OS</th><th className="px-6 py-3 text-center">Penalizações</th><th className="px-6 py-3 text-center">Pontos</th></tr></thead>
-                <tbody className="divide-y divide-gray-200">
-                  {reportData.map(item => {
-                      const techPenalties = osPenalties.filter(p => p.technicianId === item.technicianId && item.orders.some(o => o.id === p.osId));
-                      const totalPenaltyAmount = techPenalties.reduce((sum, p) => sum + p.amount, 0);
-                      
-                      return (
-                        <tr key={item.technicianId} className="hover:bg-gray-50">
-                            <td className="px-6 py-4 font-medium text-gray-900">{item.technicianName}</td>
-                            <td className="px-6 py-4 text-gray-500">{item.role === 'Sem Função' ? <span className="text-gray-400 italic">Sem Função</span> : <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs border border-gray-200">{item.role}</span>}</td>
-                            <td className="px-6 py-4 text-center text-gray-700 font-mono">{item.totalOrders}</td>
-                            <td className="px-6 py-4 text-center">
-                                {techPenalties.length > 0 ? (
-                                    <div className="flex flex-col items-center">
-                                        <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100">{techPenalties.length} ( -{totalPenaltyAmount} pts )</span>
-                                    </div>
-                                ) : <span className="text-gray-300">-</span>}
-                            </td>
-                            <td className={`px-6 py-4 text-center font-bold text-lg ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</td>
-                        </tr>
-                      );
-                  })}
-                  {reportData.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</td></tr>}
-                </tbody>
-              </table>
-            ) : (
-              <div className="divide-y divide-gray-200">
-                {reportData.map(item => (
-                  <div key={item.technicianId} className="p-6">
-                    <div className="flex justify-between items-center mb-4 bg-gray-50 p-3 rounded-lg border border-gray-100"><div><h4 className="font-bold text-gray-900 text-lg">{item.technicianName}</h4><span className="text-xs text-gray-500 uppercase tracking-wide">{item.role === 'Sem Função' ? 'Sem Função' : item.role}</span></div><div className="text-right"><div className="text-xs text-gray-500">Total Pontos</div><div className={`text-xl font-bold ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>{item.totalPoints}</div></div></div>
-                    <table className="w-full text-left text-sm"><thead className="text-xs text-gray-500 uppercase border-b border-gray-200"><tr><th className="py-2 pl-2">ID OS</th><th className="py-2">Nome do Cliente</th><th className="py-2">Data Fechamento</th><th className="py-2">Data Reabertura</th><th className="py-2 text-right pr-2">Pontos</th></tr></thead><tbody className="divide-y divide-gray-100">{item.orders.map(order => {
-                       const points = getPoints(order, osSplits, osPenalties);
-                       const penalties = osPenalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
-                       return (
-                           <React.Fragment key={order.id}>
-                               <tr className="hover:bg-gray-50">
-                                   <td className="py-2 pl-2 font-mono text-gray-600">#{order.id}</td>
-                                   <td className="py-2 text-gray-800">{order.clientId ? (clientCache[order.clientId] || 'Buscando...') : 'N/A'}</td>
-                                   <td className="py-2 text-gray-600">{formatDateBR(order.closingDate)}</td>
-                                   <td className="py-2 text-orange-600 font-medium">{formatDateBR(order.reopeningDate)}</td>
-                                   <td className={`py-2 text-right pr-2 font-medium ${points < 0 ? 'text-red-600' : 'text-brand-600'}`}>{points}</td>
-                               </tr>
-                               {penalties.length > 0 && (
-                                   <tr className="bg-red-50">
-                                       <td colSpan={5} className="py-1 px-4 text-xs text-red-700 border-b border-red-100 italic">
-                                           {penalties.map((p, idx) => (
-                                               <div key={idx} className="flex items-center gap-2">
-                                                   <Gavel size={10} />
-                                                   <span className="font-bold">PENALIZAÇÃO:</span> {p.reason} (-{p.amount} pts)
-                                               </div>
-                                           ))}
-                                       </td>
-                                   </tr>
-                               )}
-                           </React.Fragment>
-                       )
-                    })}</tbody></table>
+
+      {/* ========================================================================= */}
+      {/* SUB-ABA 1: RELATÓRIO POR FUNCIONÁRIO (EXISTENTE)                           */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'employees' && (
+        <>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print">
+            <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+              <Filter size={20} className="text-brand-600" /> Filtros do Relatório por Funcionário
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label>
+                    <input 
+                      type="date" 
+                      value={filters.startDate} 
+                      onChange={e => setFilters({...filters, startDate: e.target.value})} 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                    />
                   </div>
-                ))}
-                {reportData.length === 0 && <div className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</div>}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label>
+                    <input 
+                      type="date" 
+                      value={filters.endDate} 
+                      onChange={e => setFilters({...filters, endDate: e.target.value})} 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label>
+                  <select 
+                    value={filters.dateType} 
+                    onChange={e => setFilters({...filters, dateType: e.target.value as 'opening' | 'closing'})} 
+                    className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50"
+                  >
+                    <option value="closing">Fechamento</option>
+                    <option value="opening">Abertura</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Organizar por</label>
+                  <select 
+                    value={filters.sortBy} 
+                    onChange={e => setFilters({...filters, sortBy: e.target.value as any})} 
+                    className="w-full rounded-lg border-gray-300 border p-2 text-sm"
+                  >
+                    <option value="NAME">Nome do Técnico</option>
+                    <option value="POINTS">Maior Pontuação</option>
+                  </select>
+                </div>
               </div>
-            )}
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Técnico</label>
+                  <select 
+                    value={filters.technicianId} 
+                    onChange={e => setFilters({...filters, technicianId: e.target.value})} 
+                    className="w-full rounded-lg border-gray-300 border p-2 text-sm"
+                  >
+                    <option value="">TODOS OS TÉCNICOS</option>
+                    {technicians.map((t, idx) => (
+                      <option key={`${t.id}-${idx}`} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">
+                    Função (Grupo/Cargo) 
+                    {permissionWarning && (
+                      <span className="text-yellow-500 cursor-help" title={permissionWarning}>
+                        <AlertTriangle size={12} />
+                      </span>
+                    )}
+                  </label>
+                  <select 
+                    value={filters.function} 
+                    onChange={e => setFilters({...filters, function: e.target.value})} 
+                    className="w-full rounded-lg border-gray-300 border p-2 text-sm"
+                  >
+                    <option value="">TODAS AS FUNÇÕES</option>
+                    {availableFunctions.map((f, i) => (
+                      <option key={i} value={f}>{f}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-col justify-between">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-2">Tipo de Relatório</label>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="radio" 
+                        checked={filters.type === 'SYNTHETIC'} 
+                        onChange={() => setFilters({...filters, type: 'SYNTHETIC'})} 
+                        className="text-brand-600 focus:ring-brand-500" 
+                      />
+                      <span className="text-sm text-gray-700">Sintético</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="radio" 
+                        checked={filters.type === 'ANALYTICAL'} 
+                        onChange={() => setFilters({...filters, type: 'ANALYTICAL'})} 
+                        className="text-brand-600 focus:ring-brand-500" 
+                      />
+                      <span className="text-sm text-gray-700">Analítico</span>
+                    </label>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={handleGenerate} 
+                  disabled={isLoading} 
+                  className="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="animate-spin" size={18} />
+                      <span>{loadingProgress || 'Processando...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={18} /> GERAR RELATÓRIO
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+
+          {error && (
+            <div className="bg-red-50 text-red-700 p-4 rounded-lg flex items-center gap-2 border border-red-200">
+              <AlertTriangle size={20} />{error}
+            </div>
+          )}
+
+          {reportData && (
+            <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
+              <div className="bg-gray-50 p-4 border-b border-gray-200 flex justify-between items-center">
+                <div>
+                  <h3 className="font-bold text-gray-800 text-lg">
+                    Relatório de Pontuação por Funcionário ({filters.type === 'SYNTHETIC' ? 'Sintético' : 'Analítico'})
+                  </h3>
+                  <p className="text-sm text-gray-500">
+                    Período: {new Date(filters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} até {new Date(filters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={handlePrint} 
+                    className="flex items-center gap-2 text-gray-600 hover:text-gray-900 bg-white border border-gray-300 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors no-print"
+                  >
+                    <Printer size={16} /> Imprimir
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-0 overflow-x-auto">
+                {filters.type === 'SYNTHETIC' ? (
+                  <table className="w-full text-left">
+                    <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase">
+                      <tr>
+                        <th className="px-6 py-3">Nome do Funcionário</th>
+                        <th className="px-6 py-3">Função</th>
+                        <th className="px-6 py-3 text-center">Total de OS</th>
+                        <th className="px-6 py-3 text-center">Penalizações</th>
+                        <th className="px-6 py-3 text-center">Pontos</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.map(item => {
+                          const techPenalties = osPenalties.filter(p => p.technicianId === item.technicianId && item.orders.some(o => o.id === p.osId));
+                          const totalPenaltyAmount = techPenalties.reduce((sum, p) => sum + p.amount, 0);
+                          
+                          return (
+                            <tr key={item.technicianId} className="hover:bg-gray-50">
+                                <td className="px-6 py-4 font-medium text-gray-900">{item.technicianName}</td>
+                                <td className="px-6 py-4 text-gray-500">
+                                  {item.role === 'Sem Função' ? (
+                                    <span className="text-gray-400 italic">Sem Função</span>
+                                  ) : (
+                                    <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs border border-gray-200">{item.role}</span>
+                                  )}
+                                </td>
+                                <td className="px-6 py-4 text-center text-gray-700 font-mono">{item.totalOrders}</td>
+                                <td className="px-6 py-4 text-center">
+                                    {techPenalties.length > 0 ? (
+                                        <div className="flex flex-col items-center">
+                                            <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100">
+                                              {techPenalties.length} ( -{totalPenaltyAmount} pts )
+                                            </span>
+                                        </div>
+                                    ) : <span className="text-gray-300">-</span>}
+                                </td>
+                                <td className={`px-6 py-4 text-center font-bold text-lg ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>
+                                  {item.totalPoints}
+                                </td>
+                            </tr>
+                          );
+                      })}
+                      {reportData.length === 0 && (
+                        <tr><td colSpan={5} className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="divide-y divide-gray-200">
+                    {reportData.map(item => (
+                      <div key={item.technicianId} className="p-6">
+                        <div className="flex justify-between items-center mb-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                          <div>
+                            <h4 className="font-bold text-gray-900 text-lg">{item.technicianName}</h4>
+                            <span className="text-xs text-gray-500 uppercase tracking-wide">
+                              {item.role === 'Sem Função' ? 'Sem Função' : item.role}
+                            </span>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs text-gray-500">Total Pontos</div>
+                            <div className={`text-xl font-bold ${item.totalPoints < 0 ? 'text-red-600' : 'text-brand-600'}`}>
+                              {item.totalPoints}
+                            </div>
+                          </div>
+                        </div>
+
+                        <table className="w-full text-left text-sm">
+                          <thead className="text-xs text-gray-500 uppercase border-b border-gray-200">
+                            <tr>
+                              <th className="py-2 pl-2">ID OS</th>
+                              <th className="py-2">Nome do Cliente</th>
+                              <th className="py-2">Data Fechamento</th>
+                              <th className="py-2">Data Reabertura</th>
+                              <th className="py-2 text-right pr-2">Pontos</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {item.orders.map(order => {
+                               const points = getPoints(order, osSplits, osPenalties);
+                               const penalties = osPenalties.filter(p => p.osId === order.id && p.technicianId === order.technicianId);
+                               return (
+                                   <React.Fragment key={order.id}>
+                                       <tr className="hover:bg-gray-50">
+                                           <td className="py-2 pl-2 font-mono text-gray-600">#{order.id}</td>
+                                           <td className="py-2 text-gray-800">
+                                             {order.clientId ? (clientCache[order.clientId] || 'Buscando...') : 'N/A'}
+                                           </td>
+                                           <td className="py-2 text-gray-600">{formatDateBR(order.closingDate)}</td>
+                                           <td className="py-2 text-orange-600 font-medium">{formatDateBR(order.reopeningDate)}</td>
+                                           <td className={`py-2 text-right pr-2 font-medium ${points < 0 ? 'text-red-600' : 'text-brand-600'}`}>
+                                             {points}
+                                           </td>
+                                       </tr>
+                                       {penalties.length > 0 && (
+                                           <tr className="bg-red-50">
+                                               <td colSpan={5} className="py-1 px-4 text-xs text-red-700 border-b border-red-100 italic">
+                                                   {penalties.map((p, idx) => (
+                                                       <div key={idx} className="flex items-center gap-2">
+                                                           <Gavel size={10} />
+                                                           <span className="font-bold">PENALIZAÇÃO:</span> {p.reason} (-{p.amount} pts)
+                                                       </div>
+                                                   ))}
+                                               </td>
+                                           </tr>
+                                       )}
+                                   </React.Fragment>
+                               )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                    {reportData.length === 0 && (
+                      <div className="p-8 text-center text-gray-500">Nenhum dado encontrado para o período.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-ABA 2: RELATÓRIOS POR ASSUNTO (NOVO)                                   */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'subjects' && (
+        <>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print">
+            <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+              <Filter size={20} className="text-brand-600" /> Filtros do Relatório por Assunto
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              {/* Datas */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label>
+                    <input 
+                      type="date" 
+                      value={subjectFilters.startDate} 
+                      onChange={e => setSubjectFilters({...subjectFilters, startDate: e.target.value})} 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Data Final</label>
+                    <input 
+                      type="date" 
+                      value={subjectFilters.endDate} 
+                      onChange={e => setSubjectFilters({...subjectFilters, endDate: e.target.value})} 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Filtrar por Data de</label>
+                  <select 
+                    value={subjectFilters.dateType} 
+                    onChange={e => setSubjectFilters({...subjectFilters, dateType: e.target.value as 'closing' | 'opening'})} 
+                    className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50 focus:ring-brand-500 focus:border-brand-500"
+                  >
+                    <option value="closing">Fechamento</option>
+                    <option value="opening">Abertura</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Assunto */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1 flex items-center justify-between">
+                  <span>Assunto da OS</span>
+                  {loadingSubjectsAndResponses && <Loader2 size={12} className="animate-spin text-brand-600" />}
+                </label>
+                <select 
+                  value={subjectFilters.subjectId} 
+                  onChange={e => setSubjectFilters({...subjectFilters, subjectId: e.target.value})} 
+                  className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500"
+                >
+                  <option value="">TODOS OS ASSUNTOS ({availableSubjects.length})</option>
+                  {availableSubjects.map(sub => (
+                    <option key={sub.id} value={sub.id}>
+                      [#{sub.id}] {sub.assunto}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Origem: API Assunto (su_oss_assunto)
+                </p>
+              </div>
+
+              {/* Resposta */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1 flex items-center justify-between">
+                  <span>Resposta</span>
+                  {loadingSubjectsAndResponses && <Loader2 size={12} className="animate-spin text-brand-600" />}
+                </label>
+                <select 
+                  value={subjectFilters.responseId} 
+                  onChange={e => setSubjectFilters({...subjectFilters, responseId: e.target.value})} 
+                  className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500"
+                >
+                  <option value="">TODAS AS RESPOSTAS ({availableResponses.length})</option>
+                  {availableResponses.map(resp => (
+                    <option key={resp.id} value={resp.id}>
+                      [#{resp.id}] {resp.titulo}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Origem: API Resposta Padrão (su_oss_respostas)
+                </p>
+              </div>
+
+              {/* Botão de Ação */}
+              <div className="flex flex-col justify-end">
+                <button 
+                  onClick={handleGenerateSubjectReport} 
+                  disabled={isLoadingSubject} 
+                  className="w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70"
+                >
+                  {isLoadingSubject ? (
+                    <>
+                      <Loader2 className="animate-spin" size={18} />
+                      <span className="truncate">{loadingProgressSubject || 'Processando...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={18} /> GERAR RELATÓRIO
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {subjectError && (
+            <div className="bg-red-50 text-red-700 p-4 rounded-lg flex items-center gap-2 border border-red-200">
+              <AlertTriangle size={20} />{subjectError}
+            </div>
+          )}
+
+          {subjectReportData && (
+            <div className="space-y-4">
+              {/* Barra Superior com Contadores e Ações */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex items-center gap-3">
+                  <div className="p-3 bg-brand-50 text-brand-600 rounded-lg">
+                    <FileText size={22} />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-extrabold text-gray-900">{subjectReportData.length}</div>
+                    <div className="text-xs text-gray-500 font-medium">Total de OS Encontradas</div>
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex items-center gap-3">
+                  <div className="p-3 bg-indigo-50 text-indigo-600 rounded-lg">
+                    <Tag size={22} />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-extrabold text-gray-900">
+                      {new Set(subjectReportData.map(r => r.subjectId).filter(Boolean)).size}
+                    </div>
+                    <div className="text-xs text-gray-500 font-medium">Assuntos Distintos</div>
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex items-center gap-3">
+                  <div className="p-3 bg-green-50 text-green-600 rounded-lg">
+                    <MessageSquare size={22} />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-extrabold text-gray-900">
+                      {subjectReportData.filter(r => r.responseId !== '-' || r.responseContent !== '-').length}
+                    </div>
+                    <div className="text-xs text-gray-500 font-medium">Com Resposta Preenchida</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tabela Sintética */}
+              <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
+                {/* Header do Relatório */}
+                <div className="bg-gray-50 p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                      <Tag size={18} className="text-brand-600" />
+                      Relatório de Ordens de Serviço por Assunto (Sintético)
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Período: {new Date(subjectFilters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} até {new Date(subjectFilters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} • 
+                      Filtrado por Data de: <span className="font-semibold text-gray-700">{subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}</span>
+                      {subjectFilters.subjectId && (
+                        <span> • Assunto: #{subjectFilters.subjectId}</span>
+                      )}
+                      {subjectFilters.responseId && (
+                        <span> • Resposta: #{subjectFilters.responseId}</span>
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 w-full sm:w-auto no-print">
+                    <div className="relative flex-1 sm:w-64">
+                      <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Filtrar nesta lista..." 
+                        value={subjectSearchQuery} 
+                        onChange={e => {
+                          setSubjectSearchQuery(e.target.value);
+                          setSubjectPage(1);
+                        }} 
+                        className="w-full pl-9 pr-3 py-1.5 rounded-lg border-gray-300 border text-xs focus:ring-brand-500 focus:border-brand-500" 
+                      />
+                    </div>
+                    <button 
+                      onClick={handlePrint} 
+                      className="flex items-center gap-2 text-gray-700 hover:text-gray-900 bg-white border border-gray-300 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                    >
+                      <Printer size={16} /> Imprimir
+                    </button>
+                  </div>
+                </div>
+
+                {/* Conteúdo da Tabela */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase border-b border-gray-200">
+                      <tr>
+                        <th className="px-4 py-3 text-center w-24">ID OS</th>
+                        <th className="px-4 py-3 min-w-[180px]">Cliente</th>
+                        <th className="px-4 py-3 min-w-[200px]">Assunto</th>
+                        <th className="px-4 py-3 min-w-[180px]">ID / Título Resposta</th>
+                        <th className="px-4 py-3 min-w-[280px]">Resposta</th>
+                        <th className="px-4 py-3 min-w-[140px] text-center">Data</th>
+                        <th className="px-4 py-3 text-center w-28">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {paginatedSubjectRows.map((row) => {
+                        const resolvedClientName = clientCache[row.clientId] || row.clientName;
+                        const isExpanded = expandedResponseOsId === row.osId;
+
+                        return (
+                          <tr key={row.osId} className="hover:bg-gray-50 transition-colors">
+                            {/* ID OS */}
+                            <td className="px-4 py-3 text-center font-mono font-bold text-brand-700">
+                              #{row.osId}
+                            </td>
+
+                            {/* Cliente */}
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-gray-900 leading-tight">
+                                {resolvedClientName}
+                              </div>
+                              {row.clientId && (
+                                <div className="text-[11px] text-gray-400 font-mono">
+                                  ID Cliente: #{row.clientId}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Assunto */}
+                            <td className="px-4 py-3">
+                              <div className="flex items-start gap-1.5">
+                                <span className="bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded text-xs font-medium">
+                                  #{row.subjectId || '-'}
+                                </span>
+                                <span className="text-gray-800 text-xs font-medium leading-relaxed">
+                                  {row.subjectTitle}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* ID e Título da Resposta */}
+                            <td className="px-4 py-3">
+                              {row.responseId !== '-' ? (
+                                <div className="flex flex-col gap-0.5">
+                                  <div className="flex items-center gap-1">
+                                    <span className="bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded text-[11px] font-mono font-bold">
+                                      #{row.responseId}
+                                    </span>
+                                    <span className="text-xs font-semibold text-gray-800">
+                                      {row.responseTitle}
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-gray-400 italic">
+                                  {row.responseTitle}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Resposta */}
+                            <td className="px-4 py-3">
+                              {row.responseContent !== '-' ? (
+                                <div>
+                                  <div className={`text-xs text-gray-700 whitespace-pre-wrap ${!isExpanded && row.responseContent.length > 120 ? 'line-clamp-2' : ''}`}>
+                                    {row.responseContent}
+                                  </div>
+                                  {row.responseContent.length > 120 && (
+                                    <button 
+                                      onClick={() => setExpandedResponseOsId(isExpanded ? null : row.osId)} 
+                                      className="text-[11px] font-semibold text-brand-600 hover:text-brand-800 mt-1 flex items-center gap-0.5 no-print"
+                                    >
+                                      {isExpanded ? (
+                                        <>Ver menos <ChevronUp size={12} /></>
+                                      ) : (
+                                        <>Ver completo <ChevronDown size={12} /></>
+                                      )}
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-gray-400 text-xs">-</span>
+                              )}
+                            </td>
+
+                            {/* Data */}
+                            <td className="px-4 py-3 text-center text-xs text-gray-600">
+                              <div className="font-medium">
+                                {subjectFilters.dateType === 'closing' 
+                                  ? formatDateBR(row.closingDate) 
+                                  : formatDateBR(row.openingDate)}
+                              </div>
+                              <div className="text-[10px] text-gray-400">
+                                {subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}
+                              </div>
+                            </td>
+
+                            {/* Status */}
+                            <td className="px-4 py-3 text-center">
+                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                                row.status === 'Fechado' 
+                                  ? 'bg-green-50 text-green-700 border border-green-200' 
+                                  : row.status === 'Aberto' 
+                                  ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' 
+                                  : 'bg-blue-50 text-blue-700 border border-blue-200'
+                              }`}>
+                                {row.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {filteredSubjectRows.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-gray-500">
+                            Nenhum registro encontrado para os filtros selecionados.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Paginação da Tabela Sintética */}
+                {filteredSubjectRows.length > SUBJECT_PAGE_SIZE && (
+                  <div className="bg-gray-50 px-4 py-3 border-t border-gray-200 flex items-center justify-between no-print">
+                    <div className="text-xs text-gray-500">
+                      Mostrando <span className="font-semibold">{((subjectPage - 1) * SUBJECT_PAGE_SIZE) + 1}</span> até <span className="font-semibold">{Math.min(subjectPage * SUBJECT_PAGE_SIZE, filteredSubjectRows.length)}</span> de <span className="font-semibold">{filteredSubjectRows.length}</span> OSs
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => setSubjectPage(prev => Math.max(prev - 1, 1))} 
+                        disabled={subjectPage === 1} 
+                        className="px-3 py-1 rounded border border-gray-300 text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Anterior
+                      </button>
+                      <span className="text-xs text-gray-600 font-medium">
+                        Página {subjectPage} de {totalSubjectPages}
+                      </span>
+                      <button 
+                        onClick={() => setSubjectPage(prev => Math.min(prev + 1, totalSubjectPages))} 
+                        disabled={subjectPage === totalSubjectPages} 
+                        className="px-3 py-1 rounded border border-gray-300 text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Próxima
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
