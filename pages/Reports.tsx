@@ -13,8 +13,24 @@ import {
   ChevronDown,
   ChevronUp,
   Tag,
-  MessageSquare
+  MessageSquare,
+  User,
+  BarChart3,
+  PieChart as PieChartIcon
 } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  CartesianGrid,
+  Cell,
+  PieChart,
+  Pie
+} from 'recharts';
 import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty } from '../types';
 
 interface ReportFilter {
@@ -52,6 +68,8 @@ export interface SubjectReportRow {
   osId: string;
   clientId: string;
   clientName: string;
+  technicianId?: string;
+  technicianName: string;
   subjectId: string;
   subjectTitle: string;
   responseId: string;
@@ -1070,6 +1088,46 @@ export const Reports: React.FC = () => {
           clientIdsToResolve.add(clientId);
         }
 
+        // Resolução do Técnico Responsável
+        const osTechId = String(reg.id_tecnico || '');
+        const osLoginId = String(reg.id_login || '');
+
+        let candidateByTechId: EmpInfo | undefined;
+        let candidateByLoginId: EmpInfo | undefined;
+        let candidateByName: EmpInfo | undefined;
+
+        if (osTechId && osTechId !== '0') {
+          candidateByTechId = employeesMap.get(osTechId);
+        }
+        if (osLoginId && osLoginId !== '0') {
+          const linkedEmpId = usersToEmployeeMap.get(osLoginId);
+          if (linkedEmpId) candidateByLoginId = employeesMap.get(linkedEmpId);
+        }
+        if (reg.tecnico) {
+          candidateByName = nameToEmployeeMap.get(String(reg.tecnico).toLowerCase().trim());
+        }
+
+        let techName = reg.tecnico || '';
+        let resolvedTechId = osTechId && osTechId !== '0' ? osTechId : '';
+
+        if (candidateByTechId) {
+          techName = candidateByTechId.name;
+          resolvedTechId = candidateByTechId.id;
+        } else if (candidateByLoginId) {
+          techName = candidateByLoginId.name;
+          resolvedTechId = candidateByLoginId.id;
+        } else if (candidateByName) {
+          techName = candidateByName.name;
+          resolvedTechId = candidateByName.id;
+        } else if (!techName) {
+          if (osTechId && osTechId !== '0') {
+            const techObj = technicians.find(t => String(t.id) === osTechId);
+            techName = techObj?.name || `Técnico #${osTechId}`;
+          } else {
+            techName = 'Sem Técnico';
+          }
+        }
+
         let statusText = 'Em Andamento';
         if (reg.status === 'F') statusText = 'Fechado';
         else if (reg.status === 'A') statusText = 'Aberto';
@@ -1079,6 +1137,8 @@ export const Reports: React.FC = () => {
           osId: String(reg.id),
           clientId: clientId,
           clientName: clientCache[clientId] || (clientId ? `Cliente #${clientId}` : 'Não Informado'),
+          technicianId: resolvedTechId,
+          technicianName: techName,
           subjectId: osSubjectId,
           subjectTitle: subjectTitle,
           responseId: respId,
@@ -1125,10 +1185,13 @@ export const Reports: React.FC = () => {
     const query = subjectSearchQuery.toLowerCase().trim();
     return subjectReportData.filter(row => {
       const cName = (clientCache[row.clientId] || row.clientName).toLowerCase();
+      const tName = (row.technicianName || '').toLowerCase();
       return (
         row.osId.includes(query) ||
         row.clientId.includes(query) ||
         cName.includes(query) ||
+        tName.includes(query) ||
+        (row.technicianId && row.technicianId.includes(query)) ||
         row.subjectTitle.toLowerCase().includes(query) ||
         row.responseTitle.toLowerCase().includes(query) ||
         row.responseContent.toLowerCase().includes(query) ||
@@ -1143,14 +1206,144 @@ export const Reports: React.FC = () => {
     subjectPage * SUBJECT_PAGE_SIZE
   );
 
+  const CHART_COLORS = [
+    '#2563eb', '#7c3aed', '#059669', '#d97706', '#dc2626', 
+    '#0891b2', '#db2777', '#4f46e5', '#65a30d', '#ea580c', 
+    '#0d9488', '#9333ea'
+  ];
+
+  // Dados consolidados para os Gráficos por Resposta
+  const responseChartData = React.useMemo(() => {
+    if (!subjectReportData || subjectReportData.length === 0) return [];
+
+    const counts: Record<string, { label: string; count: number; id: string }> = {};
+
+    subjectReportData.forEach(row => {
+      let label = row.responseTitle || 'Sem Resposta';
+      if (row.responseId && row.responseId !== '-') {
+        label = `[#${row.responseId}] ${row.responseTitle}`;
+      }
+      if (!counts[label]) {
+        counts[label] = { label, count: 0, id: row.responseId };
+      }
+      counts[label].count += 1;
+    });
+
+    return Object.values(counts)
+      .sort((a, b) => b.count - a.count)
+      .map(item => {
+        let shortLabel = item.label;
+        if (shortLabel.length > 22) {
+          shortLabel = shortLabel.substring(0, 20) + '...';
+        }
+        return {
+          ...item,
+          shortLabel,
+          fullLabel: item.label
+        };
+      });
+  }, [subjectReportData]);
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <style>{`
+        @page {
+          size: A4 landscape;
+          margin: 8mm 6mm;
+        }
+
         @media print {
-          body * { visibility: hidden; }
-          #report-print-area, #report-print-area * { visibility: visible; }
-          #report-print-area { position: absolute; left: 0; top: 0; width: 100%; margin: 0; padding: 0; }
-          .no-print { display: none !important; }
+          /* Reset geral de layout para impressão limpa em folha A4 */
+          html, body {
+            width: 100% !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            color: #111827 !important;
+            font-size: 8pt !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+
+          /* Ocultar elementos desnecessários na impressão */
+          nav, aside, header, .no-print, [role="navigation"], .sidebar {
+            display: none !important;
+          }
+
+          /* Área do relatório estática para fluir naturalmente entre as páginas A4 */
+          #report-print-area {
+            position: static !important;
+            display: block !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            overflow: visible !important;
+          }
+
+          /* Tabela e quebra de páginas */
+          table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            page-break-inside: auto !important;
+            table-layout: auto !important;
+          }
+
+          thead {
+            display: table-header-group !important; /* Repete o cabeçalho em TODAS as páginas A4 */
+          }
+
+          tr {
+            page-break-inside: avoid !important; /* Não corta a linha no meio */
+            page-break-after: auto !important;
+          }
+
+          th {
+            background-color: #f1f5f9 !important;
+            color: #1e293b !important;
+            font-weight: 700 !important;
+            font-size: 7.5pt !important;
+            text-transform: uppercase !important;
+            border: 1px solid #cbd5e1 !important;
+            padding: 5px 4px !important;
+          }
+
+          td {
+            border: 1px solid #e2e8f0 !important;
+            padding: 4px 5px !important;
+            font-size: 7.5pt !important;
+            line-height: 1.25 !important;
+            vertical-align: top !important;
+            word-break: break-word !important;
+          }
+
+          /* Alternância entre visualização em tela (paginada) e impressão (completa de todas as páginas) */
+          .screen-only {
+            display: none !important;
+          }
+
+          .print-only {
+            display: table-row-group !important;
+          }
+
+          .print-header-visible {
+            display: block !important;
+          }
+        }
+
+        @media screen {
+          .screen-only {
+            display: table-row-group;
+          }
+          .print-only {
+            display: none !important;
+          }
+          .print-header-visible {
+            display: none !important;
+          }
         }
       `}</style>
 
@@ -1611,7 +1804,130 @@ export const Reports: React.FC = () => {
 
           {subjectReportData && (
             <div className="space-y-4">
-              {/* Barra Superior com Contadores e Ações */}
+              {/* Gráficos por Resposta (Pizza e Barras) - Logo acima dos cards total de OS */}
+              <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 no-print">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 mb-4 border-b border-gray-100">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
+                      <BarChart3 size={20} />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-gray-800 text-sm sm:text-base flex items-center gap-2">
+                        Distribuição e Proporção por Resposta
+                      </h4>
+                      <p className="text-xs text-gray-500">
+                        Visualização gráfica das Ordens de Serviço agrupadas por tipo de resposta
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-xs font-semibold px-2.5 py-1 bg-gray-100 text-gray-700 rounded-full w-fit">
+                    {responseChartData.length} {responseChartData.length === 1 ? 'resposta identificada' : 'respostas identificadas'}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Gráfico de Barras */}
+                  <div className="flex flex-col bg-gray-50/60 p-4 rounded-xl border border-gray-100">
+                    <h5 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <BarChart3 size={15} className="text-brand-600" />
+                      Total de OSs por Resposta (Barras)
+                    </h5>
+                    <div className="h-64 w-full">
+                      {responseChartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={responseChartData} margin={{ top: 10, right: 15, left: -15, bottom: 40 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis 
+                              dataKey="shortLabel" 
+                              tick={{ fontSize: 10, fill: '#64748b' }} 
+                              interval={0}
+                              angle={-25}
+                              textAnchor="end"
+                              height={50}
+                            />
+                            <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                            <Tooltip 
+                              formatter={(value: any) => [
+                                `${value} OS (${((Number(value) / (subjectReportData?.length || 1)) * 100).toFixed(1)}%)`, 
+                                'Quantidade'
+                              ]}
+                              labelFormatter={(_, payload) => {
+                                const item = payload && payload[0]?.payload;
+                                return item?.fullLabel || '';
+                              }}
+                              contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px' }}
+                            />
+                            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                              {responseChartData.map((_, index) => (
+                                <Cell key={`bar-cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          Nenhum dado para exibir no gráfico
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Gráfico de Pizza */}
+                  <div className="flex flex-col bg-gray-50/60 p-4 rounded-xl border border-gray-100">
+                    <h5 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <PieChartIcon size={15} className="text-purple-600" />
+                      Proporção Percentual por Resposta (Pizza)
+                    </h5>
+                    <div className="h-64 w-full">
+                      {responseChartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Tooltip 
+                              formatter={(value: any, _, item: any) => [
+                                `${value} OS (${((Number(value) / (subjectReportData?.length || 1)) * 100).toFixed(1)}%)`,
+                                item?.payload?.fullLabel || 'Resposta'
+                              ]}
+                              contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px' }}
+                            />
+                            <Legend 
+                              verticalAlign="bottom" 
+                              height={36} 
+                              iconType="circle"
+                              formatter={(value, entry: any) => (
+                                <span className="text-[11px] text-gray-700 font-medium">
+                                  {entry?.payload?.shortLabel || value}
+                                </span>
+                              )}
+                            />
+                            <Pie
+                              data={responseChartData}
+                              dataKey="count"
+                              nameKey="shortLabel"
+                              cx="50%"
+                              cy="45%"
+                              outerRadius={75}
+                              innerRadius={30}
+                              paddingAngle={2}
+                              label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
+                              labelLine={false}
+                            >
+                              {responseChartData.map((_, index) => (
+                                <Cell key={`pie-cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                              ))}
+                            </Pie>
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          Nenhum dado para exibir no gráfico
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Barra Superior com Contadores */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex items-center gap-3">
                   <div className="p-3 bg-brand-50 text-brand-600 rounded-lg">
@@ -1650,8 +1966,33 @@ export const Reports: React.FC = () => {
 
               {/* Tabela Sintética */}
               <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-                {/* Header do Relatório */}
-                <div className="bg-gray-50 p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                {/* Cabeçalho de Impressão Exclusivo para Folha A4 */}
+                <div className="print-header-visible p-4 border-b-2 border-gray-900 mb-2">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h2 className="text-base font-bold text-gray-900 uppercase tracking-wide">
+                        Relatório de Ordens de Serviço por Assunto
+                      </h2>
+                      <p className="text-[9pt] text-gray-600 mt-1">
+                        Período: <strong>{new Date(subjectFilters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</strong> até <strong>{new Date(subjectFilters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</strong> • 
+                        Filtrado por: Data de <strong>{subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}</strong>
+                        {subjectFilters.subjectId && (
+                          <span> • Assunto: <strong>[#{subjectFilters.subjectId}] {subjectsMap.get(subjectFilters.subjectId)?.assunto || ''}</strong></span>
+                        )}
+                        {subjectFilters.responseId && (
+                          <span> • Resposta: <strong>[#{subjectFilters.responseId}] {responsesMap.get(subjectFilters.responseId)?.titulo || ''}</strong></span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="text-right text-[8pt] text-gray-500">
+                      <div>Total: <strong className="text-gray-900 font-mono text-[9pt]">{filteredSubjectRows.length} OSs</strong></div>
+                      <div>Impresso em: {new Date().toLocaleString('pt-BR')}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Header na Tela */}
+                <div className="bg-gray-50 p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 no-print">
                   <div>
                     <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
                       <Tag size={18} className="text-brand-600" />
@@ -1669,12 +2010,12 @@ export const Reports: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-3 w-full sm:w-auto no-print">
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
                     <div className="relative flex-1 sm:w-64">
                       <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
                       <input 
                         type="text" 
-                        placeholder="Filtrar nesta lista..." 
+                        placeholder="Filtrar por OS, técnico, cliente..." 
                         value={subjectSearchQuery} 
                         onChange={e => {
                           setSubjectSearchQuery(e.target.value);
@@ -1687,7 +2028,7 @@ export const Reports: React.FC = () => {
                       onClick={handlePrint} 
                       className="flex items-center gap-2 text-gray-700 hover:text-gray-900 bg-white border border-gray-300 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
                     >
-                      <Printer size={16} /> Imprimir
+                      <Printer size={16} /> Imprimir Relatório
                     </button>
                   </div>
                 </div>
@@ -1697,59 +2038,77 @@ export const Reports: React.FC = () => {
                   <table className="w-full text-left text-sm">
                     <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase border-b border-gray-200">
                       <tr>
-                        <th className="px-4 py-3 text-center w-24">ID OS</th>
-                        <th className="px-4 py-3 min-w-[180px]">Cliente</th>
-                        <th className="px-4 py-3 min-w-[200px]">Assunto</th>
-                        <th className="px-4 py-3 min-w-[180px]">ID / Título Resposta</th>
-                        <th className="px-4 py-3 min-w-[280px]">Resposta</th>
-                        <th className="px-4 py-3 min-w-[140px] text-center">Data</th>
-                        <th className="px-4 py-3 text-center w-28">Status</th>
+                        <th className="px-3 py-2.5 text-center w-20">ID OS</th>
+                        <th className="px-3 py-2.5 min-w-[150px]">Cliente</th>
+                        <th className="px-3 py-2.5 min-w-[150px]">Assunto</th>
+                        <th className="px-3 py-2.5 min-w-[140px]">Técnico Resp.</th>
+                        <th className="px-3 py-2.5 min-w-[160px]">ID / Título Resposta</th>
+                        <th className="px-3 py-2.5 min-w-[200px]">Resposta</th>
+                        <th className="px-3 py-2.5 min-w-[120px] text-center">Data</th>
+                        <th className="px-3 py-2.5 text-center w-24">Status</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-200">
+
+                    {/* Exibição em Tela: Linhas Paginadas */}
+                    <tbody className="divide-y divide-gray-200 screen-only">
                       {paginatedSubjectRows.map((row) => {
                         const resolvedClientName = clientCache[row.clientId] || row.clientName;
                         const isExpanded = expandedResponseOsId === row.osId;
 
                         return (
-                          <tr key={row.osId} className="hover:bg-gray-50 transition-colors">
+                          <tr key={`screen-${row.osId}`} className="hover:bg-gray-50 transition-colors">
                             {/* ID OS */}
-                            <td className="px-4 py-3 text-center font-mono font-bold text-brand-700">
+                            <td className="px-3 py-2.5 text-center font-mono font-bold text-brand-700 text-xs">
                               #{row.osId}
                             </td>
 
                             {/* Cliente */}
-                            <td className="px-4 py-3">
-                              <div className="font-medium text-gray-900 leading-tight">
+                            <td className="px-3 py-2.5">
+                              <div className="font-medium text-gray-900 leading-tight text-xs">
                                 {resolvedClientName}
                               </div>
                               {row.clientId && (
-                                <div className="text-[11px] text-gray-400 font-mono">
-                                  ID Cliente: #{row.clientId}
+                                <div className="text-[10px] text-gray-400 font-mono">
+                                  ID: #{row.clientId}
                                 </div>
                               )}
                             </td>
 
                             {/* Assunto */}
-                            <td className="px-4 py-3">
-                              <div className="flex items-start gap-1.5">
-                                <span className="bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded text-xs font-medium">
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-start gap-1">
+                                <span className="bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0">
                                   #{row.subjectId || '-'}
                                 </span>
-                                <span className="text-gray-800 text-xs font-medium leading-relaxed">
+                                <span className="text-gray-800 text-xs font-medium leading-tight">
                                   {row.subjectTitle}
                                 </span>
                               </div>
                             </td>
 
+                            {/* Técnico Responsável */}
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-center gap-1.5">
+                                <User size={13} className="text-gray-400 shrink-0" />
+                                <span className="text-xs font-medium text-gray-800 leading-tight">
+                                  {row.technicianName || 'Não Informado'}
+                                </span>
+                              </div>
+                              {row.technicianId && row.technicianId !== '0' && (
+                                <div className="text-[10px] text-gray-400 font-mono pl-4.5">
+                                  ID: #{row.technicianId}
+                                </div>
+                              )}
+                            </td>
+
                             {/* ID e Título da Resposta */}
-                            <td className="px-4 py-3">
+                            <td className="px-3 py-2.5">
                               {row.responseId !== '-' ? (
-                                <div className="flex items-start gap-1.5">
-                                  <span className="bg-purple-50 text-purple-700 border border-purple-100 px-2 py-0.5 rounded text-xs font-mono font-bold shrink-0">
+                                <div className="flex items-start gap-1">
+                                  <span className="bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded text-[11px] font-mono font-bold shrink-0">
                                     #{row.responseId}
                                   </span>
-                                  <span className="text-gray-800 text-xs font-semibold leading-relaxed">
+                                  <span className="text-gray-800 text-xs font-semibold leading-tight">
                                     {row.responseTitle}
                                   </span>
                                 </div>
@@ -1761,7 +2120,7 @@ export const Reports: React.FC = () => {
                             </td>
 
                             {/* Resposta */}
-                            <td className="px-4 py-3">
+                            <td className="px-3 py-2.5">
                               {row.responseContent !== '-' ? (
                                 <div>
                                   <div className={`text-xs text-gray-700 whitespace-pre-wrap ${!isExpanded && row.responseContent.length > 120 ? 'line-clamp-2' : ''}`}>
@@ -1786,20 +2145,20 @@ export const Reports: React.FC = () => {
                             </td>
 
                             {/* Data */}
-                            <td className="px-4 py-3 text-center text-xs text-gray-600">
+                            <td className="px-3 py-2.5 text-center text-xs text-gray-600 whitespace-nowrap">
                               <div className="font-medium">
                                 {subjectFilters.dateType === 'closing' 
                                   ? formatDateBR(row.closingDate) 
                                   : formatDateBR(row.openingDate)}
                               </div>
-                              <div className="text-[10px] text-gray-400">
+                              <div className="text-[10px] text-gray-400 capitalize">
                                 {subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}
                               </div>
                             </td>
 
                             {/* Status */}
-                            <td className="px-4 py-3 text-center">
-                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            <td className="px-3 py-2.5 text-center">
+                              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
                                 row.status === 'Fechado' 
                                   ? 'bg-green-50 text-green-700 border border-green-200' 
                                   : row.status === 'Aberto' 
@@ -1815,7 +2174,107 @@ export const Reports: React.FC = () => {
 
                       {filteredSubjectRows.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="p-8 text-center text-gray-500">
+                          <td colSpan={8} className="p-8 text-center text-gray-500">
+                            Nenhum registro encontrado para os filtros selecionados.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+
+                    {/* Exibição para Impressão: TODAS as Linhas Filtradas sem quebra por paginação */}
+                    <tbody className="divide-y divide-gray-200 print-only">
+                      {filteredSubjectRows.map((row) => {
+                        const resolvedClientName = clientCache[row.clientId] || row.clientName;
+
+                        return (
+                          <tr key={`print-${row.osId}`}>
+                            {/* ID OS */}
+                            <td className="text-center font-mono font-bold text-gray-900">
+                              #{row.osId}
+                            </td>
+
+                            {/* Cliente */}
+                            <td>
+                              <div className="font-semibold text-gray-900 leading-tight">
+                                {resolvedClientName}
+                              </div>
+                              {row.clientId && (
+                                <div className="text-[6.5pt] text-gray-500 font-mono">
+                                  ID: #{row.clientId}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Assunto */}
+                            <td>
+                              <div className="leading-tight">
+                                <span className="font-bold mr-1">#{row.subjectId || '-'}:</span>
+                                <span>{row.subjectTitle}</span>
+                              </div>
+                            </td>
+
+                            {/* Técnico Responsável */}
+                            <td>
+                              <div className="font-medium text-gray-900 leading-tight">
+                                {row.technicianName || 'Não Informado'}
+                              </div>
+                              {row.technicianId && row.technicianId !== '0' && (
+                                <div className="text-[6.5pt] text-gray-500 font-mono">
+                                  ID: #{row.technicianId}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* ID e Título da Resposta */}
+                            <td>
+                              {row.responseId !== '-' ? (
+                                <div className="leading-tight">
+                                  <span className="font-bold mr-1">#{row.responseId}:</span>
+                                  <span>{row.responseTitle}</span>
+                                </div>
+                              ) : (
+                                <span className="text-gray-400 italic">
+                                  {row.responseTitle}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Resposta */}
+                            <td>
+                              {row.responseContent !== '-' ? (
+                                <div className="text-gray-800 whitespace-pre-wrap leading-tight">
+                                  {row.responseContent}
+                                </div>
+                              ) : (
+                                <span className="text-gray-400 italic">-</span>
+                              )}
+                            </td>
+
+                            {/* Data */}
+                            <td className="text-center whitespace-nowrap">
+                              <div className="font-medium">
+                                {subjectFilters.dateType === 'closing' 
+                                  ? formatDateBR(row.closingDate) 
+                                  : formatDateBR(row.openingDate)}
+                              </div>
+                              <div className="text-[6.5pt] text-gray-500">
+                                {subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}
+                              </div>
+                            </td>
+
+                            {/* Status */}
+                            <td className="text-center whitespace-nowrap">
+                              <span className="font-bold">
+                                {row.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {filteredSubjectRows.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="p-8 text-center text-gray-500">
                             Nenhum registro encontrado para os filtros selecionados.
                           </td>
                         </tr>
