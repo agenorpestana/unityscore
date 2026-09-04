@@ -272,10 +272,10 @@ const App: React.FC = () => {
       />
 
       {/* Conteúdo Principal com Ajuste Responsivo */}
-      <div className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300 w-full">
+      <div className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300 w-full print:ml-0 print:p-0 print:m-0">
         
         {/* Mobile Header Bar */}
-        <div className="md:hidden flex items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+        <div className="md:hidden flex items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100 no-print print:hidden">
            <div className="flex items-center gap-3">
              <button 
                onClick={() => setIsMobileMenuOpen(true)}

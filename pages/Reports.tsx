@@ -15,6 +15,10 @@ import {
   Tag,
   MessageSquare,
   User,
+  UserX,
+  Building2,
+  Calendar,
+  CheckCircle2,
   BarChart3,
   PieChart as PieChartIcon
 } from 'lucide-react';
@@ -164,6 +168,26 @@ export const Reports: React.FC = () => {
   const [expandedResponseOsId, setExpandedResponseOsId] = useState<string | null>(null);
   const [subjectPage, setSubjectPage] = useState(1);
   const SUBJECT_PAGE_SIZE = 50;
+  
+  // Opção para Ocultar Técnico Responsável no relatório
+  const [hideTechnician, setHideTechnician] = useState<boolean>(false);
+  const [currentUserName, setCurrentUserName] = useState<string>('Administrador');
+  const [currentCompanyName, setCurrentCompanyName] = useState<string>('');
+
+  useEffect(() => {
+    try {
+      const savedSession = localStorage.getItem('unity_user_session');
+      if (savedSession) {
+        const u = JSON.parse(savedSession);
+        if (u?.name) setCurrentUserName(u.name);
+      }
+      const savedCompany = localStorage.getItem('unity_company_data');
+      if (savedCompany) {
+        const c = JSON.parse(savedCompany);
+        if (c?.name) setCurrentCompanyName(c.name);
+      }
+    } catch (e) {}
+  }, []);
 
   const [technicians, setTechnicians] = useState<(Technician & { role?: string })[]>([]);
   
@@ -1249,7 +1273,7 @@ export const Reports: React.FC = () => {
       <style>{`
         @page {
           size: A4 landscape;
-          margin: 8mm 6mm;
+          margin: 8mm 6mm 10mm 6mm;
         }
 
         @media print {
@@ -1260,14 +1284,14 @@ export const Reports: React.FC = () => {
             margin: 0 !important;
             padding: 0 !important;
             background: #ffffff !important;
-            color: #111827 !important;
+            color: #0f172a !important;
             font-size: 8pt !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
 
           /* Ocultar elementos desnecessários na impressão */
-          nav, aside, header, .no-print, [role="navigation"], .sidebar {
+          nav, aside, header, .no-print, [role="navigation"], .sidebar, button, input {
             display: none !important;
           }
 
@@ -1282,42 +1306,57 @@ export const Reports: React.FC = () => {
             border: none !important;
             box-shadow: none !important;
             overflow: visible !important;
+            background: #ffffff !important;
           }
 
-          /* Tabela e quebra de páginas */
-          table {
+          /* Tabela e quebra de páginas com layout fixo para evitar colunas cortadas */
+          .report-table {
             width: 100% !important;
             border-collapse: collapse !important;
             page-break-inside: auto !important;
-            table-layout: auto !important;
+            table-layout: fixed !important;
           }
 
-          thead {
+          .report-table thead {
             display: table-header-group !important; /* Repete o cabeçalho em TODAS as páginas A4 */
           }
 
-          tr {
+          .report-table tr {
             page-break-inside: avoid !important; /* Não corta a linha no meio */
             page-break-after: auto !important;
           }
 
-          th {
-            background-color: #f1f5f9 !important;
-            color: #1e293b !important;
+          .report-table th {
+            background-color: #1e293b !important;
+            color: #ffffff !important;
             font-weight: 700 !important;
             font-size: 7.5pt !important;
             text-transform: uppercase !important;
-            border: 1px solid #cbd5e1 !important;
+            letter-spacing: 0.02em !important;
+            border: 1px solid #334155 !important;
             padding: 5px 4px !important;
           }
 
-          td {
-            border: 1px solid #e2e8f0 !important;
+          .report-table td {
+            border: 1px solid #cbd5e1 !important;
             padding: 4px 5px !important;
             font-size: 7.5pt !important;
             line-height: 1.25 !important;
             vertical-align: top !important;
+          }
+
+          .report-table tbody tr:nth-child(even) td {
+            background-color: #f8fafc !important;
+          }
+
+          .report-nowrap {
+            white-space: nowrap !important;
+            word-break: keep-all !important;
+          }
+
+          .report-break {
             word-break: break-word !important;
+            overflow-wrap: break-word !important;
           }
 
           /* Alternância entre visualização em tela (paginada) e impressão (completa de todas as páginas) */
@@ -1332,6 +1371,10 @@ export const Reports: React.FC = () => {
           .print-header-visible {
             display: block !important;
           }
+
+          .print-footer-visible {
+            display: flex !important;
+          }
         }
 
         @media screen {
@@ -1342,6 +1385,9 @@ export const Reports: React.FC = () => {
             display: none !important;
           }
           .print-header-visible {
+            display: none !important;
+          }
+          .print-footer-visible {
             display: none !important;
           }
         }
@@ -1794,6 +1840,28 @@ export const Reports: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Opção Adicional: Ocultar Técnico */}
+            <div className="pt-4 mt-4 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2.5 cursor-pointer select-none bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3.5 py-2 rounded-lg transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={hideTechnician} 
+                  onChange={(e) => setHideTechnician(e.target.checked)}
+                  className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-4 h-4 cursor-pointer" 
+                />
+                <UserX size={16} className={hideTechnician ? "text-amber-600" : "text-gray-400"} />
+                <span className="text-xs font-semibold text-gray-700">
+                  Ocultar coluna "Técnico Responsável" no relatório
+                </span>
+              </label>
+
+              <span className="text-xs text-gray-400">
+                {hideTechnician 
+                  ? 'A coluna do técnico ficará oculta na tela e na impressão, expandindo os demais campos.' 
+                  : 'A coluna do técnico está visível.'}
+              </span>
+            </div>
           </div>
 
           {subjectError && (
@@ -1966,33 +2034,91 @@ export const Reports: React.FC = () => {
 
               {/* Tabela Sintética */}
               <div id="report-print-area" className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-                {/* Cabeçalho de Impressão Exclusivo para Folha A4 */}
-                <div className="print-header-visible p-4 border-b-2 border-gray-900 mb-2">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h2 className="text-base font-bold text-gray-900 uppercase tracking-wide">
-                        Relatório de Ordens de Serviço por Assunto
-                      </h2>
-                      <p className="text-[9pt] text-gray-600 mt-1">
-                        Período: <strong>{new Date(subjectFilters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</strong> até <strong>{new Date(subjectFilters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</strong> • 
-                        Filtrado por: Data de <strong>{subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}</strong>
-                        {subjectFilters.subjectId && (
-                          <span> • Assunto: <strong>[#{subjectFilters.subjectId}] {subjectsMap.get(subjectFilters.subjectId)?.assunto || ''}</strong></span>
-                        )}
-                        {subjectFilters.responseId && (
-                          <span> • Resposta: <strong>[#{subjectFilters.responseId}] {responsesMap.get(subjectFilters.responseId)?.titulo || ''}</strong></span>
-                        )}
-                      </p>
+                {/* Cabeçalho de Impressão Trabalhado para Folha A4 */}
+                <div className="print-header-visible mb-3 pb-3 border-b-2 border-slate-800">
+                  {/* Linha 1: Identidade da Empresa e Título do Documento */}
+                  <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-slate-900 text-white px-2.5 py-1 rounded font-black tracking-wider text-[11pt]">
+                        UNITY SCORE
+                      </div>
+                      <div>
+                        <h1 className="text-[12pt] font-black text-slate-900 uppercase tracking-wide leading-tight">
+                          Relatório Operacional de Ordens de Serviço
+                        </h1>
+                        <p className="text-[7.5pt] text-slate-600 font-medium">
+                          {currentCompanyName ? `${currentCompanyName} • ` : ''}Filtro Estruturado por Assunto e Respostas
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-right text-[8pt] text-gray-500">
-                      <div>Total: <strong className="text-gray-900 font-mono text-[9pt]">{filteredSubjectRows.length} OSs</strong></div>
-                      <div>Impresso em: {new Date().toLocaleString('pt-BR')}</div>
+
+                    <div className="text-right text-[7.5pt] text-slate-600 space-y-0.5">
+                      <div><span className="text-slate-400">Emissão:</span> <strong className="text-slate-800 font-mono">{new Date().toLocaleString('pt-BR')}</strong></div>
+                      <div><span className="text-slate-400">Operador:</span> <strong className="text-slate-800">{currentUserName}</strong></div>
+                      <div className="text-slate-400 text-[6.5pt] uppercase tracking-widest">Documento Oficial Interno</div>
+                    </div>
+                  </div>
+
+                  {/* Linha 2: Quadro de Parâmetros e Filtros Aplicados */}
+                  <div className="mt-2 grid grid-cols-4 gap-2 bg-slate-50 p-2 rounded border border-slate-200 text-[7.5pt]">
+                    <div>
+                      <span className="text-slate-500 uppercase font-bold text-[6.5pt] block">Período de Apuração</span>
+                      <span className="font-semibold text-slate-900 font-mono">
+                        {new Date(subjectFilters.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} a {new Date(subjectFilters.endDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+                      </span>
+                      <span className="text-slate-500 text-[6.5pt] block">
+                        Base: Data de {subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-slate-500 uppercase font-bold text-[6.5pt] block">Assunto da OS</span>
+                      <span className="font-semibold text-slate-900 truncate block">
+                        {subjectFilters.subjectId 
+                          ? `[#${subjectFilters.subjectId}] ${subjectsMap.get(subjectFilters.subjectId)?.assunto || ''}` 
+                          : 'TODOS OS ASSUNTOS'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-slate-500 uppercase font-bold text-[6.5pt] block">Resposta Padrão</span>
+                      <span className="font-semibold text-slate-900 truncate block">
+                        {subjectFilters.responseId 
+                          ? `[#${subjectFilters.responseId}] ${responsesMap.get(subjectFilters.responseId)?.titulo || ''}` 
+                          : 'TODAS AS RESPOSTAS'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-slate-500 uppercase font-bold text-[6.5pt] block">Técnico Responsável</span>
+                      <span className={`font-semibold block ${hideTechnician ? 'text-amber-700' : 'text-slate-900'}`}>
+                        {hideTechnician ? 'OCULTO NO RELATÓRIO' : 'TODOS OS TÉCNICOS'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Linha 3: Tira de Indicadores / Totais Compactos */}
+                  <div className="mt-2 flex items-center justify-between text-[7.5pt] bg-slate-100/80 px-3 py-1.5 rounded border border-slate-200 font-medium">
+                    <div>
+                      Total de Ordens de Serviço: <strong className="text-slate-900 font-mono text-[8pt]">{filteredSubjectRows.length}</strong>
+                    </div>
+                    <div className="text-slate-400">•</div>
+                    <div>
+                      Finalizadas: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status === 'Fechado').length}</strong>
+                    </div>
+                    <div className="text-slate-400">•</div>
+                    <div>
+                      Em Aberto: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status === 'Aberto').length}</strong>
+                    </div>
+                    <div className="text-slate-400">•</div>
+                    <div>
+                      Com Resposta Preenchida: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.responseId !== '-' || r.responseContent !== '-').length}</strong>
                     </div>
                   </div>
                 </div>
 
                 {/* Header na Tela */}
-                <div className="bg-gray-50 p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 no-print">
+                <div className="bg-gray-50 p-4 border-b border-gray-200 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 no-print">
                   <div>
                     <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
                       <Tag size={18} className="text-brand-600" />
@@ -2007,11 +2133,26 @@ export const Reports: React.FC = () => {
                       {subjectFilters.responseId && (
                         <span> • Resposta: [#{subjectFilters.responseId}] {responsesMap.get(subjectFilters.responseId)?.titulo || ''}</span>
                       )}
+                      {hideTechnician && (
+                        <span className="text-amber-600 font-medium"> • Técnico oculto</span>
+                      )}
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-3 w-full sm:w-auto">
-                    <div className="relative flex-1 sm:w-64">
+                  <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
+                    {/* Checkbox de Atalho para Ocultar Técnico */}
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-gray-700 bg-white border border-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors shadow-sm whitespace-nowrap">
+                      <input 
+                        type="checkbox" 
+                        checked={hideTechnician} 
+                        onChange={(e) => setHideTechnician(e.target.checked)}
+                        className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-3.5 h-3.5 cursor-pointer" 
+                      />
+                      <UserX size={14} className={hideTechnician ? "text-amber-600" : "text-gray-400"} />
+                      <span>Ocultar Técnico</span>
+                    </label>
+
+                    <div className="relative flex-1 sm:w-56">
                       <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
                       <input 
                         type="text" 
@@ -2026,7 +2167,7 @@ export const Reports: React.FC = () => {
                     </div>
                     <button 
                       onClick={handlePrint} 
-                      className="flex items-center gap-2 text-gray-700 hover:text-gray-900 bg-white border border-gray-300 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                      className="flex items-center gap-2 text-white bg-slate-900 hover:bg-slate-800 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors shadow-sm whitespace-nowrap"
                     >
                       <Printer size={16} /> Imprimir Relatório
                     </button>
@@ -2035,17 +2176,30 @@ export const Reports: React.FC = () => {
 
                 {/* Conteúdo da Tabela */}
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
+                  <table className="report-table w-full text-left text-sm">
+                    {/* Colunas com larguras exatas para impressão e tela */}
+                    <colgroup>
+                      <col style={{ width: '7%' }} /> {/* ID OS */}
+                      <col style={{ width: hideTechnician ? '23%' : '18%' }} /> {/* Cliente */}
+                      <col style={{ width: hideTechnician ? '18%' : '14%' }} /> {/* Assunto */}
+                      {!hideTechnician && <col style={{ width: '15%' }} />} {/* Técnico Resp. */}
+                      <col style={{ width: hideTechnician ? '17%' : '14%' }} /> {/* ID / Título Resposta */}
+                      <col style={{ width: hideTechnician ? '23%' : '18%' }} /> {/* Resposta */}
+                      <col style={{ width: '6%' }} /> {/* Data */}
+                      <col style={{ width: '5%' }} /> {/* Status */}
+                    </colgroup>
                     <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase border-b border-gray-200">
                       <tr>
-                        <th className="px-3 py-2.5 text-center w-20">ID OS</th>
+                        <th className="px-3 py-2.5 text-center w-20 report-nowrap">ID OS</th>
                         <th className="px-3 py-2.5 min-w-[150px]">Cliente</th>
-                        <th className="px-3 py-2.5 min-w-[150px]">Assunto</th>
-                        <th className="px-3 py-2.5 min-w-[140px]">Técnico Resp.</th>
+                        <th className="px-3 py-2.5 min-w-[140px]">Assunto</th>
+                        {!hideTechnician && (
+                          <th className="px-3 py-2.5 min-w-[140px]">Técnico Resp.</th>
+                        )}
                         <th className="px-3 py-2.5 min-w-[160px]">ID / Título Resposta</th>
-                        <th className="px-3 py-2.5 min-w-[200px]">Resposta</th>
-                        <th className="px-3 py-2.5 min-w-[120px] text-center">Data</th>
-                        <th className="px-3 py-2.5 text-center w-24">Status</th>
+                        <th className="px-3 py-2.5 min-w-[180px]">Resposta</th>
+                        <th className="px-3 py-2.5 min-w-[110px] text-center report-nowrap">Data</th>
+                        <th className="px-3 py-2.5 text-center w-20 report-nowrap">Status</th>
                       </tr>
                     </thead>
 
@@ -2058,7 +2212,7 @@ export const Reports: React.FC = () => {
                         return (
                           <tr key={`screen-${row.osId}`} className="hover:bg-gray-50 transition-colors">
                             {/* ID OS */}
-                            <td className="px-3 py-2.5 text-center font-mono font-bold text-brand-700 text-xs">
+                            <td className="px-3 py-2.5 text-center font-mono font-bold text-brand-700 text-xs whitespace-nowrap">
                               #{row.osId}
                             </td>
 
@@ -2086,20 +2240,22 @@ export const Reports: React.FC = () => {
                               </div>
                             </td>
 
-                            {/* Técnico Responsável */}
-                            <td className="px-3 py-2.5">
-                              <div className="flex items-center gap-1.5">
-                                <User size={13} className="text-gray-400 shrink-0" />
-                                <span className="text-xs font-medium text-gray-800 leading-tight">
-                                  {row.technicianName || 'Não Informado'}
-                                </span>
-                              </div>
-                              {row.technicianId && row.technicianId !== '0' && (
-                                <div className="text-[10px] text-gray-400 font-mono pl-4.5">
-                                  ID: #{row.technicianId}
+                            {/* Técnico Responsável (se não ocultado) */}
+                            {!hideTechnician && (
+                              <td className="px-3 py-2.5">
+                                <div className="flex items-center gap-1.5">
+                                  <User size={13} className="text-gray-400 shrink-0" />
+                                  <span className="text-xs font-medium text-gray-800 leading-tight">
+                                    {row.technicianName || 'Não Informado'}
+                                  </span>
                                 </div>
-                              )}
-                            </td>
+                                {row.technicianId && row.technicianId !== '0' && (
+                                  <div className="text-[10px] text-gray-400 font-mono pl-4.5">
+                                    ID: #{row.technicianId}
+                                  </div>
+                                )}
+                              </td>
+                            )}
 
                             {/* ID e Título da Resposta */}
                             <td className="px-3 py-2.5">
@@ -2157,7 +2313,7 @@ export const Reports: React.FC = () => {
                             </td>
 
                             {/* Status */}
-                            <td className="px-3 py-2.5 text-center">
+                            <td className="px-3 py-2.5 text-center whitespace-nowrap">
                               <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
                                 row.status === 'Fechado' 
                                   ? 'bg-green-50 text-green-700 border border-green-200' 
@@ -2174,7 +2330,7 @@ export const Reports: React.FC = () => {
 
                       {filteredSubjectRows.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideTechnician ? 7 : 8} className="p-8 text-center text-gray-500">
                             Nenhum registro encontrado para os filtros selecionados.
                           </td>
                         </tr>
@@ -2189,82 +2345,86 @@ export const Reports: React.FC = () => {
                         return (
                           <tr key={`print-${row.osId}`}>
                             {/* ID OS */}
-                            <td className="text-center font-mono font-bold text-gray-900">
+                            <td className="text-center report-nowrap font-mono font-bold text-slate-900">
                               #{row.osId}
                             </td>
 
                             {/* Cliente */}
-                            <td>
-                              <div className="font-semibold text-gray-900 leading-tight">
+                            <td className="report-break">
+                              <div className="font-bold text-slate-900 leading-tight">
                                 {resolvedClientName}
                               </div>
                               {row.clientId && (
-                                <div className="text-[6.5pt] text-gray-500 font-mono">
+                                <div className="text-[6.5pt] text-slate-500 font-mono">
                                   ID: #{row.clientId}
                                 </div>
                               )}
                             </td>
 
                             {/* Assunto */}
-                            <td>
+                            <td className="report-break">
                               <div className="leading-tight">
-                                <span className="font-bold mr-1">#{row.subjectId || '-'}:</span>
-                                <span>{row.subjectTitle}</span>
+                                <span className="font-bold text-slate-900 mr-1">#{row.subjectId || '-'}:</span>
+                                <span className="text-slate-800">{row.subjectTitle}</span>
                               </div>
                             </td>
 
-                            {/* Técnico Responsável */}
-                            <td>
-                              <div className="font-medium text-gray-900 leading-tight">
-                                {row.technicianName || 'Não Informado'}
-                              </div>
-                              {row.technicianId && row.technicianId !== '0' && (
-                                <div className="text-[6.5pt] text-gray-500 font-mono">
-                                  ID: #{row.technicianId}
+                            {/* Técnico Responsável (se não ocultado) */}
+                            {!hideTechnician && (
+                              <td className="report-break">
+                                <div className="font-semibold text-slate-900 leading-tight">
+                                  {row.technicianName || 'Não Informado'}
                                 </div>
-                              )}
-                            </td>
+                                {row.technicianId && row.technicianId !== '0' && (
+                                  <div className="text-[6.5pt] text-slate-500 font-mono">
+                                    ID: #{row.technicianId}
+                                  </div>
+                                )}
+                              </td>
+                            )}
 
                             {/* ID e Título da Resposta */}
-                            <td>
+                            <td className="report-break">
                               {row.responseId !== '-' ? (
                                 <div className="leading-tight">
-                                  <span className="font-bold mr-1">#{row.responseId}:</span>
-                                  <span>{row.responseTitle}</span>
+                                  <span className="font-bold text-slate-900 mr-1">#{row.responseId}:</span>
+                                  <span className="text-slate-800">{row.responseTitle}</span>
                                 </div>
                               ) : (
-                                <span className="text-gray-400 italic">
+                                <span className="text-slate-400 italic">
                                   {row.responseTitle}
                                 </span>
                               )}
                             </td>
 
                             {/* Resposta */}
-                            <td>
+                            <td className="report-break">
                               {row.responseContent !== '-' ? (
-                                <div className="text-gray-800 whitespace-pre-wrap leading-tight">
+                                <div className="text-slate-800 whitespace-pre-wrap leading-tight text-[7.5pt]">
                                   {row.responseContent}
                                 </div>
                               ) : (
-                                <span className="text-gray-400 italic">-</span>
+                                <span className="text-slate-400 italic">-</span>
                               )}
                             </td>
 
                             {/* Data */}
-                            <td className="text-center whitespace-nowrap">
-                              <div className="font-medium">
+                            <td className="text-center report-nowrap">
+                              <div className="font-mono font-semibold text-slate-900 text-[7pt]">
                                 {subjectFilters.dateType === 'closing' 
                                   ? formatDateBR(row.closingDate) 
                                   : formatDateBR(row.openingDate)}
                               </div>
-                              <div className="text-[6.5pt] text-gray-500">
+                              <div className="text-[6pt] text-slate-500 uppercase tracking-tighter">
                                 {subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura'}
                               </div>
                             </td>
 
                             {/* Status */}
-                            <td className="text-center whitespace-nowrap">
-                              <span className="font-bold">
+                            <td className="text-center report-nowrap">
+                              <span className={`font-bold text-[7pt] px-1 py-0.5 rounded ${
+                                row.status === 'Fechado' ? 'text-green-800 bg-green-50' : 'text-amber-800 bg-amber-50'
+                              }`}>
                                 {row.status}
                               </span>
                             </td>
@@ -2274,13 +2434,23 @@ export const Reports: React.FC = () => {
 
                       {filteredSubjectRows.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideTechnician ? 7 : 8} className="p-8 text-center text-gray-500">
                             Nenhum registro encontrado para os filtros selecionados.
                           </td>
                         </tr>
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Rodapé de Impressão Trabalhado */}
+                <div className="print-footer-visible mt-3 pt-2 border-t border-slate-300 flex justify-between items-center text-[7pt] text-slate-500">
+                  <div>
+                    Unity Score • Sistema Integrado de Gestão e Produtividade • Documento emitido para conferência interna e auditoria operacional
+                  </div>
+                  <div className="font-mono">
+                    Total de Registros: {filteredSubjectRows.length} OSs
+                  </div>
                 </div>
 
                 {/* Paginação da Tabela Sintética */}
