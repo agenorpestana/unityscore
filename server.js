@@ -87,6 +87,7 @@ async function initDatabase() {
         await addColumnSafe('companies', 'opa_suite_token VARCHAR(255)'); 
         await addColumnSafe('companies', 'opa_suite_canal_id VARCHAR(100)'); 
         await addColumnSafe('companies', 'opa_suite_default_template_id VARCHAR(100)'); 
+        await addColumnSafe('companies', 'opa_suite_default_department_id VARCHAR(100)'); 
 
         // Migrations Users
         await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
@@ -149,7 +150,7 @@ initDatabase();
 // Obter Configurações
 app.get('/api/companies/:id', async (req, res) => {
     try {
-        const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id FROM companies WHERE id = ?', [req.params.id]);
+        const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id, opa_suite_default_department_id FROM companies WHERE id = ?', [req.params.id]);
         if (rows.length > 0) {
             // Normaliza para camelCase para o frontend
             const c = rows[0];
@@ -166,7 +167,8 @@ app.get('/api/companies/:id', async (req, res) => {
                 opaSuiteUrl: c.opa_suite_url || '',
                 opaSuiteToken: c.opa_suite_token || '',
                 opaSuiteCanalId: c.opa_suite_canal_id || '',
-                opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || ''
+                opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
+                opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
             });
         } else {
             res.status(404).json({ error: 'Empresa não encontrada' });
@@ -178,13 +180,13 @@ app.get('/api/companies/:id', async (req, res) => {
 
 // Atualizar Configurações
 app.put('/api/companies/:id', async (req, res) => {
-    const { name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId } = req.body;
+    const { name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId } = req.body;
     try {
         await pool.query(`
             UPDATE companies 
-            SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?
+            SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
             WHERE id=?
-        `, [name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, req.params.id]);
+        `, [name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, req.params.id]);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -506,7 +508,7 @@ async function getOpaSuiteConfig(companyId, directUrl, directToken) {
         return { url, token: directToken.trim() };
     }
     if (!companyId) return null;
-    const [rows] = await pool.query('SELECT opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id FROM companies WHERE id = ?', [companyId]);
+    const [rows] = await pool.query('SELECT opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id, opa_suite_default_department_id FROM companies WHERE id = ?', [companyId]);
     if (rows.length === 0 || !rows[0].opa_suite_url || !rows[0].opa_suite_token) {
         return null;
     }
@@ -517,7 +519,8 @@ async function getOpaSuiteConfig(companyId, directUrl, directToken) {
         url,
         token: rows[0].opa_suite_token.trim(),
         canalId: rows[0].opa_suite_canal_id,
-        templateId: rows[0].opa_suite_default_template_id
+        templateId: rows[0].opa_suite_default_template_id,
+        departmentId: rows[0].opa_suite_default_department_id
     };
 }
 
@@ -610,11 +613,77 @@ const requestOpaSuite = (targetUrl, method = 'GET', bodyData = null, token) => {
     });
 };
 
-// Listar Templates no Opa! Suite (suporta GET e POST com body json)
+// Listar Departamentos no Opa! Suite (suporta GET e POST)
+const handleOpaDepartamentos = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
+    const directUrl = req.body?.directUrl || req.query.directUrl;
+    const directToken = req.body?.directToken || req.query.directToken;
+    const customFilter = req.body?.filter;
+    const customOptions = req.body?.options || { limit: 100 };
+
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        const baseUrl = config.url.replace(/\/+$/, '');
+        const targetUrl = `${baseUrl}/api/v1/departamento/`;
+        console.log(`Opa! Suite Buscando departamentos em: ${targetUrl}`);
+
+        const requestBody = {
+            filter: customFilter || {},
+            options: customOptions
+        };
+
+        let response = await requestOpaSuite(targetUrl, 'GET', requestBody, config.token);
+        let parsed = null;
+        try {
+            parsed = JSON.parse(response.data);
+        } catch {}
+
+        let departamentos = [];
+        if (parsed && Array.isArray(parsed.data)) {
+            departamentos = parsed.data;
+        } else if (parsed && Array.isArray(parsed)) {
+            departamentos = parsed;
+        } else if (parsed && Array.isArray(parsed.registros)) {
+            departamentos = parsed.registros;
+        }
+
+        if (departamentos.length === 0) {
+            try {
+                const fallbackRes = await requestOpaSuite(`${baseUrl}/api/v1/departamento`, 'GET', requestBody, config.token);
+                const fbParsed = JSON.parse(fallbackRes.data);
+                const fbList = Array.isArray(fbParsed?.data) ? fbParsed.data : (Array.isArray(fbParsed) ? fbParsed : []);
+                if (fbList.length > 0) {
+                    departamentos = fbList;
+                }
+            } catch (err) {}
+        }
+
+        console.log(`Opa! Suite: ${departamentos.length} departamento(s) encontrado(s).`);
+
+        return res.status(200).json({
+            status: 'success',
+            code: 200,
+            data: departamentos
+        });
+    } catch (e) {
+        console.error('Erro Opa! Suite Departamentos:', e);
+        res.status(500).json({ error: 'Erro ao listar departamentos Opa! Suite: ' + e.message });
+    }
+};
+
+app.get('/api/opasuite/departamentos', handleOpaDepartamentos);
+app.post('/api/opasuite/departamentos', handleOpaDepartamentos);
+
+// Listar Templates no Opa! Suite (suporta busca por canal de comunicação específico ou geral)
 const handleOpaTemplates = async (req, res) => {
     const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
     const directUrl = req.body?.directUrl || req.query.directUrl;
     const directToken = req.body?.directToken || req.query.directToken;
+    const requestedCanalId = req.query.canalId || req.body?.canalId || req.headers['x-canal-id'];
     const customFilter = req.body?.filter;
     const customOptions = req.body?.options || { limit: 200 };
 
@@ -625,74 +694,89 @@ const handleOpaTemplates = async (req, res) => {
         }
 
         const baseUrl = config.url.replace(/\/+$/, '');
-        const requestBody = {
-            filter: customFilter || {},
-            options: customOptions
-        };
-
-        console.log(`Opa! Suite Buscando templates em: ${baseUrl}/api/v1/template`);
-
-        // 1. Tenta GET com body em /api/v1/template conforme doc do Opa! Suite
-        let response = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'GET', requestBody, config.token);
-        let parsed = null;
-        try {
-            parsed = JSON.parse(response.data);
-        } catch {}
-
         let templates = [];
-        if (parsed && Array.isArray(parsed.data)) {
-            templates = parsed.data;
-        } else if (parsed && Array.isArray(parsed)) {
-            templates = parsed;
-        } else if (parsed && Array.isArray(parsed.registros)) {
-            templates = parsed.registros;
-        }
 
-        // 2. Se vazio ou erro, tenta /api/v1/template/ (com barra final)
-        if (templates.length === 0) {
+        // 1. Se canalId foi informado (ou salvo nas configurações da empresa), busca templates relacionados ao canal:
+        // GET /api/v1/canal-comunicacao/:idCanal/template
+        const channelToQuery = requestedCanalId || config.canalId;
+        if (channelToQuery) {
+            console.log(`Opa! Suite Buscando templates por canal em: ${baseUrl}/api/v1/canal-comunicacao/${channelToQuery}/template`);
             try {
-                const retrySlash = await requestOpaSuite(`${baseUrl}/api/v1/template/`, 'GET', requestBody, config.token);
-                const slashParsed = JSON.parse(retrySlash.data);
-                const slashList = Array.isArray(slashParsed?.data) ? slashParsed.data : (Array.isArray(slashParsed) ? slashParsed : (Array.isArray(slashParsed?.registros) ? slashParsed.registros : []));
-                if (slashList.length > 0) {
-                    templates = slashList;
-                    parsed = slashParsed;
-                    console.log(`Opa! Suite: Encontrados ${templates.length} templates com barra final.`);
+                const canalRes = await requestOpaSuite(`${baseUrl}/api/v1/canal-comunicacao/${channelToQuery}/template`, 'GET', null, config.token);
+                const parsedCanal = JSON.parse(canalRes.data);
+                const canalTemplates = Array.isArray(parsedCanal?.data) ? parsedCanal.data : (Array.isArray(parsedCanal) ? parsedCanal : []);
+                if (canalTemplates.length > 0) {
+                    templates = canalTemplates;
+                    console.log(`Opa! Suite: ${templates.length} template(s) retornado(s) do canal ${channelToQuery}.`);
                 }
-            } catch (errSlash) {
-                console.warn('Opa! Suite fallback /template/:', errSlash.message);
+            } catch (errCanal) {
+                console.warn(`Opa! Suite erro ao buscar templates do canal ${channelToQuery}:`, errCanal.message);
             }
         }
 
-        // 3. Se ainda vazio, tenta GET apenas com options limit
-        if (templates.length === 0) {
+        // 2. Se ainda não achou templates e nenhum canal específico foi filtrado, 
+        // busca os canais WhatsApp cadastrados e extrai os templates deles
+        if (templates.length === 0 && !requestedCanalId) {
             try {
-                const retrySimple = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'GET', { options: { limit: 200 } }, config.token);
-                const simpleParsed = JSON.parse(retrySimple.data);
-                const simpleList = Array.isArray(simpleParsed?.data) ? simpleParsed.data : (Array.isArray(simpleParsed) ? simpleParsed : []);
-                if (simpleList.length > 0) {
-                    templates = simpleList;
-                    parsed = simpleParsed;
-                    console.log(`Opa! Suite: Encontrados ${templates.length} templates sem filter.`);
+                console.log(`Opa! Suite: Tentando buscar canais WhatsApp para extrair templates associados...`);
+                const channelsRes = await requestOpaSuite(`${baseUrl}/api/v1/canal-comunicacao/`, 'GET', { filter: { canal: 'Whatsapp' }, options: { limit: 20 } }, config.token);
+                const parsedChannels = JSON.parse(channelsRes.data);
+                const channelsList = Array.isArray(parsedChannels?.data) ? parsedChannels.data : (Array.isArray(parsedChannels) ? parsedChannels : []);
+                
+                for (const ch of channelsList) {
+                    if (ch._id) {
+                        try {
+                            const chTplRes = await requestOpaSuite(`${baseUrl}/api/v1/canal-comunicacao/${ch._id}/template`, 'GET', null, config.token);
+                            const parsedTpl = JSON.parse(chTplRes.data);
+                            const tpls = Array.isArray(parsedTpl?.data) ? parsedTpl.data : (Array.isArray(parsedTpl) ? parsedTpl : []);
+                            if (tpls.length > 0) {
+                                for (const t of tpls) {
+                                    if (!templates.some(existing => existing._id === t._id)) {
+                                        templates.push(t);
+                                    }
+                                }
+                            }
+                        } catch (e) {}
+                    }
                 }
-            } catch (errSimple) {}
+            } catch (errChannels) {}
         }
 
-        // 4. Se ainda vazio, tenta POST (alguns ambientes convertem GET com body para POST)
+        // 3. Fallback: Endpoint genérico /api/v1/template com JSON body
         if (templates.length === 0) {
+            const requestBody = {
+                filter: customFilter || {},
+                options: customOptions
+            };
+
+            console.log(`Opa! Suite Buscando templates em: ${baseUrl}/api/v1/template`);
+
+            let response = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'GET', requestBody, config.token);
+            let parsed = null;
             try {
-                const retryPost = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'POST', requestBody, config.token);
-                const postParsed = JSON.parse(retryPost.data);
-                const postList = Array.isArray(postParsed?.data) ? postParsed.data : (Array.isArray(postParsed) ? postParsed : []);
-                if (postList.length > 0) {
-                    templates = postList;
-                    parsed = postParsed;
-                    console.log(`Opa! Suite: Encontrados ${templates.length} templates via POST.`);
-                }
-            } catch (errPost) {}
+                parsed = JSON.parse(response.data);
+            } catch {}
+
+            if (parsed && Array.isArray(parsed.data)) {
+                templates = parsed.data;
+            } else if (parsed && Array.isArray(parsed)) {
+                templates = parsed;
+            } else if (parsed && Array.isArray(parsed.registros)) {
+                templates = parsed.registros;
+            }
+
+            // Fallback com barra
+            if (templates.length === 0) {
+                try {
+                    const retrySlash = await requestOpaSuite(`${baseUrl}/api/v1/template/`, 'GET', requestBody, config.token);
+                    const slashParsed = JSON.parse(retrySlash.data);
+                    const slashList = Array.isArray(slashParsed?.data) ? slashParsed.data : (Array.isArray(slashParsed) ? slashParsed : []);
+                    if (slashList.length > 0) templates = slashList;
+                } catch (errSlash) {}
+            }
         }
 
-        console.log(`Opa! Suite: ${templates.length} templates encontrados com sucesso.`);
+        console.log(`Opa! Suite: ${templates.length} template(s) localizado(s) no total.`);
 
         return res.status(200).json({
             status: 'success',
@@ -798,7 +882,7 @@ app.post('/api/opasuite/canais', handleOpaCanais);
 // Enviar Template no Opa! Suite
 app.post('/api/opasuite/send-template', async (req, res) => {
     const companyId = req.headers['x-company-id'] || req.body.companyId;
-    const { directUrl, directToken, contato, template, canal, allowSendingToStartedCustomerService } = req.body;
+    const { directUrl, directToken, contato, template, canal, departamento, allowSendingToStartedCustomerService } = req.body;
     try {
         const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
         if (!config) {
@@ -810,9 +894,11 @@ app.post('/api/opasuite/send-template', async (req, res) => {
             return res.status(400).json({ error: 'ID do Canal de comunicação não informado.' });
         }
 
+        const departmentToSend = departamento || config.departmentId;
+
         const baseUrl = config.url.replace(/\/+$/, '');
         const targetUrl = `${baseUrl}/api/v1/template/send`;
-        console.log(`Opa! Suite Enviando template para: ${targetUrl}`);
+        console.log(`Opa! Suite Enviando template para: ${targetUrl} (canal: ${channelToSend}, depto: ${departmentToSend || 'nenhum'})`);
 
         // Formata o número do contato estritamente como a API do Opa! Suite exige: +55...
         let phoneFormatted = (contato?.canalCliente || contato?.telefone || '').toString().trim();
@@ -831,6 +917,7 @@ app.post('/api/opasuite/send-template', async (req, res) => {
                 ...(template.midiaAlternativa ? { midiaAlternativa: template.midiaAlternativa } : {})
             },
             canal: channelToSend,
+            ...(departmentToSend ? { departamento: departmentToSend } : {}),
             allowSendingToStartedCustomerService: allowSendingToStartedCustomerService !== undefined ? Boolean(allowSendingToStartedCustomerService) : true
         };
 

@@ -48,7 +48,7 @@ import {
   PieChart,
   Pie
 } from 'recharts';
-import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel } from '../types';
+import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel, OpaDepartment } from '../types';
 
 interface ReportFilter {
   startDate: string;
@@ -231,6 +231,9 @@ export const Reports: React.FC = () => {
   const [opaChannelsList, setOpaChannelsList] = useState<OpaChannel[]>([]);
   const [isLoadingOpaChannels, setIsLoadingOpaChannels] = useState<boolean>(false);
   const [opaCanalId, setOpaCanalId] = useState<string>('');
+  const [opaDepartmentsList, setOpaDepartmentsList] = useState<OpaDepartment[]>([]);
+  const [isLoadingOpaDepartments, setIsLoadingOpaDepartments] = useState<boolean>(false);
+  const [opaDepartamentoId, setOpaDepartamentoId] = useState<string>('');
   const [opaClientPhone, setOpaClientPhone] = useState<string>('');
   const [opaClientName, setOpaClientName] = useState<string>('');
   const [opaClientCpf, setOpaClientCpf] = useState<string>('');
@@ -436,19 +439,26 @@ export const Reports: React.FC = () => {
       return {};
   };
 
-  const fetchOpaTemplatesList = async (companyId?: string) => {
+  const fetchOpaTemplatesList = async (companyId?: string, canalId?: string) => {
       setIsLoadingOpaTemplates(true);
       try {
           const config = getApiConfig();
           const cid = companyId || config?.id;
           if (!cid) return [];
-          const res = await fetch(`/api/opasuite/templates?companyId=${cid}`);
+          const targetCanal = canalId || opaCanalId;
+          const canalQuery = targetCanal ? `&canalId=${encodeURIComponent(targetCanal)}` : '';
+          const res = await fetch(`/api/opasuite/templates?companyId=${cid}${canalQuery}`);
           if (res.ok) {
               const data = await res.json();
               const list: OpaTemplate[] = Array.isArray(data) ? data : (data.data || data.registros || []);
               setOpaTemplatesList(list);
-              if (list.length > 0 && !selectedOpaTemplateId) {
-                  setSelectedOpaTemplateId(list[0]._id);
+              if (list.length > 0) {
+                  setSelectedOpaTemplateId(current => {
+                      if (current && list.some(t => t._id === current)) return current;
+                      return list[0]._id;
+                  });
+              } else {
+                  setSelectedOpaTemplateId('');
               }
               return list;
           }
@@ -456,6 +466,27 @@ export const Reports: React.FC = () => {
           console.warn("Erro ao carregar templates do Opa! Suite:", e);
       } finally {
           setIsLoadingOpaTemplates(false);
+      }
+      return [];
+  };
+
+  const fetchOpaDepartmentsList = async (companyId?: string) => {
+      setIsLoadingOpaDepartments(true);
+      try {
+          const config = getApiConfig();
+          const cid = companyId || config?.id;
+          if (!cid) return [];
+          const res = await fetch(`/api/opasuite/departamentos?companyId=${cid}`);
+          if (res.ok) {
+              const data = await res.json();
+              const list: OpaDepartment[] = Array.isArray(data) ? data : (data.data || data.registros || []);
+              setOpaDepartmentsList(list);
+              return list;
+          }
+      } catch (e) {
+          console.warn("Erro ao carregar departamentos do Opa! Suite:", e);
+      } finally {
+          setIsLoadingOpaDepartments(false);
       }
       return [];
   };
@@ -513,13 +544,19 @@ export const Reports: React.FC = () => {
               setOpaChannelsList(list);
               // Pré-seleciona o canal WhatsApp automaticamente
               if (list.length > 0) {
+                  let chosenId = '';
                   setOpaCanalId(currentId => {
                       if (currentId && list.some(c => c._id === currentId)) {
+                          chosenId = currentId;
                           return currentId;
                       }
                       const active = list.find(c => c.status === 'A') || list[0];
+                      chosenId = active._id;
                       return active._id;
                   });
+                  if (chosenId) {
+                      fetchOpaTemplatesList(cid, chosenId);
+                  }
               }
               return list;
           }
@@ -651,18 +688,24 @@ export const Reports: React.FC = () => {
       setOpaClientPhone(clientPhone);
       setOpaClientCpf(clientCpf);
 
-      if (config) {
-          fetchOpaTemplatesList(config.id);
-          fetchOpaChannelsList(config.id);
-      }
-
+      let initialCanalId = '';
       const savedCompany = localStorage.getItem('unity_company_data');
       if (savedCompany) {
           try {
               const comp = JSON.parse(savedCompany);
-              if (comp.opaSuiteCanalId) setOpaCanalId(comp.opaSuiteCanalId);
+              if (comp.opaSuiteCanalId) {
+                  initialCanalId = comp.opaSuiteCanalId;
+                  setOpaCanalId(comp.opaSuiteCanalId);
+              }
               if (comp.opaSuiteDefaultTemplateId) setSelectedOpaTemplateId(comp.opaSuiteDefaultTemplateId);
+              if (comp.opaSuiteDefaultDepartmentId) setOpaDepartamentoId(comp.opaSuiteDefaultDepartmentId);
           } catch (e) {}
+      }
+
+      if (config) {
+          fetchOpaChannelsList(config.id);
+          fetchOpaDepartmentsList(config.id);
+          fetchOpaTemplatesList(config.id, initialCanalId);
       }
   };
 
@@ -695,6 +738,7 @@ export const Reports: React.FC = () => {
           const payload = {
               companyId: config.id,
               canal: opaCanalId || undefined,
+              departamento: opaDepartamentoId || undefined,
               contato: {
                   canalCliente: canalCliente,
                   nome: opaClientName || (opaTargetOs ? `Cliente #${opaTargetOs.clientId}` : 'Cliente'),
@@ -3645,7 +3689,7 @@ export const Reports: React.FC = () => {
                         type="button"
                         onClick={() => {
                           const config = getApiConfig();
-                          if (config) fetchOpaTemplatesList(config.id);
+                          if (config) fetchOpaTemplatesList(config.id, opaCanalId);
                         }}
                         disabled={isLoadingOpaTemplates}
                         className="text-[11px] text-brand-600 hover:text-brand-800 flex items-center gap-1 font-medium disabled:opacity-50"
@@ -3713,55 +3757,114 @@ export const Reports: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Canal de Comunicação (Exclusivo WhatsApp) */}
-                  <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
-                        <MessageSquare className="text-emerald-600" size={15} />
-                        <span>Canal de Comunicação (WhatsApp)</span>
+                  {/* Canal de Comunicação e Departamento Opa! Suite */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Canal WhatsApp */}
+                    <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                          <MessageSquare className="text-emerald-600" size={15} />
+                          <span>Canal WhatsApp</span>
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full border border-emerald-300 flex items-center gap-1">
+                          <CheckCircle2 size={10} className="text-emerald-600" /> WhatsApp
+                        </span>
                       </div>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full border border-emerald-300 flex items-center gap-1">
-                        <CheckCircle2 size={10} className="text-emerald-600" />
-                        WhatsApp Pré-selecionado
-                      </span>
+
+                      {isLoadingOpaChannels ? (
+                        <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
+                          <Loader2 size={13} className="animate-spin text-emerald-600" />
+                          <span>Carregando canais WhatsApp...</span>
+                        </div>
+                      ) : opaChannelsList.length > 0 ? (
+                        <div className="space-y-1">
+                          <select
+                            value={opaCanalId}
+                            onChange={e => {
+                              const newCanal = e.target.value;
+                              setOpaCanalId(newCanal);
+                              const cfg = getApiConfig();
+                              fetchOpaTemplatesList(cfg?.id, newCanal);
+                            }}
+                            className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
+                          >
+                            {opaChannelsList.map(c => (
+                              <option key={c._id} value={c._id}>
+                                {c.nome || 'Canal WhatsApp'} {c.integracao ? `(${c.integracao})` : ''} {c.status === 'A' ? '• Ativo' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-[10px] text-emerald-700">
+                            Ao alterar o canal, os templates são recarregados para o canal selecionado.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <input
+                            type="text"
+                            placeholder="ID do Canal WhatsApp"
+                            value={opaCanalId}
+                            onChange={e => {
+                              const newCanal = e.target.value;
+                              setOpaCanalId(newCanal);
+                              const cfg = getApiConfig();
+                              fetchOpaTemplatesList(cfg?.id, newCanal);
+                            }}
+                            className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
+                          />
+                        </div>
+                      )}
                     </div>
 
-                    {isLoadingOpaChannels ? (
-                      <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
-                        <Loader2 size={13} className="animate-spin text-emerald-600" />
-                        <span>Carregando canal WhatsApp do Opa! Suite...</span>
+                    {/* Departamento Opa! Suite */}
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-gray-800">
+                          <Layers className="text-brand-600" size={15} />
+                          <span>Departamento (Opa!)</span>
+                        </div>
+                        {opaDepartmentsList.length > 0 && (
+                          <span className="text-[10px] text-gray-500">
+                            {opaDepartmentsList.length} encontrado(s)
+                          </span>
+                        )}
                       </div>
-                    ) : opaChannelsList.length > 0 ? (
-                      <div className="space-y-1.5">
-                        <select
-                          value={opaCanalId}
-                          onChange={e => setOpaCanalId(e.target.value)}
-                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
-                        >
-                          {opaChannelsList.map(c => (
-                            <option key={c._id} value={c._id}>
-                              {c.nome || 'Canal WhatsApp'} {c.integracao ? `(${c.integracao})` : ''} {c.status === 'A' ? '• Ativo' : ''}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="text-[11px] text-emerald-700">
-                          O canal WhatsApp acima foi selecionado automaticamente para este envio.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <input
-                          type="text"
-                          placeholder="ID do Canal WhatsApp (ex: 212b435c1...)"
-                          value={opaCanalId}
-                          onChange={e => setOpaCanalId(e.target.value)}
-                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
-                        />
-                        <p className="text-[11px] text-emerald-700">
-                          {opaCanalId ? 'Canal WhatsApp configurado na empresa ou informado manualmente.' : 'Será utilizado o canal WhatsApp padrão cadastrado na empresa.'}
-                        </p>
-                      </div>
-                    )}
+
+                      {isLoadingOpaDepartments ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-600 py-1">
+                          <Loader2 size={13} className="animate-spin text-gray-500" />
+                          <span>Carregando departamentos...</span>
+                        </div>
+                      ) : opaDepartmentsList.length > 0 ? (
+                        <div className="space-y-1">
+                          <select
+                            value={opaDepartamentoId}
+                            onChange={e => setOpaDepartamentoId(e.target.value)}
+                            className="w-full rounded-lg border-gray-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-brand-500 focus:border-brand-500"
+                          >
+                            <option value="">Padrão da Empresa / Nenhum</option>
+                            {opaDepartmentsList.map(d => (
+                              <option key={d._id} value={d._id}>
+                                {d.nome} {d.status === 'A' ? '• Ativo' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-[10px] text-gray-500">
+                            Atendimento será direcionado a este departamento.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <input
+                            type="text"
+                            placeholder="ID do Departamento (opcional)"
+                            value={opaDepartamentoId}
+                            onChange={e => setOpaDepartamentoId(e.target.value)}
+                            className="w-full rounded-lg border-gray-300 border bg-white p-2 text-xs font-mono"
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {opaToast && (

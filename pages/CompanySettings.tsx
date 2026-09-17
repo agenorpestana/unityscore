@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Building2, MapPin, Key, Upload, Globe, ShieldCheck, Mail, Phone, Loader2, MessageSquare, CheckCircle2, AlertCircle } from 'lucide-react';
-import { Company, OpaTemplate, OpaChannel } from '../types';
+import { Save, Building2, MapPin, Key, Upload, Globe, ShieldCheck, Mail, Phone, Loader2, MessageSquare, CheckCircle2, AlertCircle, Layers } from 'lucide-react';
+import { Company, OpaTemplate, OpaChannel, OpaDepartment } from '../types';
 
 export const CompanySettings: React.FC = () => {
   const [company, setCompany] = useState<Company>({
@@ -16,6 +16,7 @@ export const CompanySettings: React.FC = () => {
     opaSuiteToken: '',
     opaSuiteCanalId: '',
     opaSuiteDefaultTemplateId: '',
+    opaSuiteDefaultDepartmentId: '',
     useCorsProxy: true,
     logoUrl: null
   });
@@ -24,9 +25,10 @@ export const CompanySettings: React.FC = () => {
   const [isFetching, setIsFetching] = useState(true);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
 
-  // Opa Suite templates e canais de WhatsApp
+  // Opa Suite templates, departamentos e canais de WhatsApp
   const [opaTemplates, setOpaTemplates] = useState<OpaTemplate[]>([]);
   const [opaChannels, setOpaChannels] = useState<OpaChannel[]>([]);
+  const [opaDepartments, setOpaDepartments] = useState<OpaDepartment[]>([]);
   const [testingOpa, setTestingOpa] = useState(false);
   const [opaTestStatus, setOpaTestStatus] = useState<{ success: boolean; text: string } | null>(null);
 
@@ -62,15 +64,17 @@ export const CompanySettings: React.FC = () => {
                  opaSuiteUrl: data.opa_suite_url || data.opaSuiteUrl || '',
                  opaSuiteToken: data.opa_suite_token || data.opaSuiteToken || '',
                  opaSuiteCanalId: data.opa_suite_canal_id || data.opaSuiteCanalId || '',
-                 opaSuiteDefaultTemplateId: data.opa_suite_default_template_id || data.opaSuiteDefaultTemplateId || ''
+                 opaSuiteDefaultTemplateId: data.opa_suite_default_template_id || data.opaSuiteDefaultTemplateId || '',
+                 opaSuiteDefaultDepartmentId: data.opa_suite_default_department_id || data.opaSuiteDefaultDepartmentId || ''
              };
              setCompany(fullData);
              localStorage.setItem('unity_company_data', JSON.stringify(fullData));
 
-             // Se já tem URL e Token do Opa Suite configurados, busca os templates e canais WhatsApp
+             // Se já tem URL e Token do Opa Suite configurados, busca os dados da API
              if (fullData.opaSuiteUrl && fullData.opaSuiteToken) {
-               fetchOpaTemplates(fullData.id);
-               fetchOpaChannels(fullData.id);
+               fetchOpaChannels(fullData.id, fullData.opaSuiteCanalId);
+               fetchOpaDepartments(fullData.id);
+               fetchOpaTemplates(fullData.id, fullData.opaSuiteCanalId);
              }
          }
      } catch (e) {
@@ -80,20 +84,42 @@ export const CompanySettings: React.FC = () => {
      }
   };
 
-  const fetchOpaTemplates = async (companyId: string) => {
+  const fetchOpaTemplates = async (companyId: string, canalId?: string) => {
     try {
-      const res = await fetch(`/api/opasuite/templates?companyId=${companyId}`);
+      const canalParam = canalId ? `&canalId=${encodeURIComponent(canalId)}` : '';
+      const res = await fetch(`/api/opasuite/templates?companyId=${companyId}${canalParam}`);
       if (res.ok) {
         const data = await res.json();
         const templates = Array.isArray(data) ? data : (data.data || data.registros || []);
         setOpaTemplates(templates);
+        if (templates.length > 0) {
+          setCompany(prev => {
+            if (!prev.opaSuiteDefaultTemplateId) {
+              return { ...prev, opaSuiteDefaultTemplateId: templates[0]._id };
+            }
+            return prev;
+          });
+        }
       }
     } catch (e) {
       console.warn("Não foi possível carregar templates do Opa Suite:", e);
     }
   };
 
-  const fetchOpaChannels = async (companyId: string) => {
+  const fetchOpaDepartments = async (companyId: string) => {
+    try {
+      const res = await fetch(`/api/opasuite/departamentos?companyId=${companyId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const depts = Array.isArray(data) ? data : (data.data || data.registros || []);
+        setOpaDepartments(depts);
+      }
+    } catch (e) {
+      console.warn("Não foi possível carregar departamentos do Opa Suite:", e);
+    }
+  };
+
+  const fetchOpaChannels = async (companyId: string, currentCanalId?: string) => {
     try {
       const res = await fetch(`/api/opasuite/canais?companyId=${companyId}&canal=Whatsapp`);
       if (res.ok) {
@@ -101,13 +127,15 @@ export const CompanySettings: React.FC = () => {
         const channels: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
         setOpaChannels(channels);
         if (channels.length > 0) {
+          const selectedId = currentCanalId || channels.find(c => c.status === 'A')?._id || channels[0]._id;
           setCompany(prev => {
             if (!prev.opaSuiteCanalId) {
-              const active = channels.find(c => c.status === 'A') || channels[0];
-              return { ...prev, opaSuiteCanalId: active._id };
+              return { ...prev, opaSuiteCanalId: selectedId };
             }
             return prev;
           });
+          // Se encontrou canal, busca templates associados àquele canal
+          fetchOpaTemplates(companyId, selectedId);
         }
       }
     } catch (e) {
@@ -126,14 +154,42 @@ export const CompanySettings: React.FC = () => {
       const directUrlParam = company.opaSuiteUrl ? `&directUrl=${encodeURIComponent(company.opaSuiteUrl)}` : '';
       const directTokenParam = company.opaSuiteToken ? `&directToken=${encodeURIComponent(company.opaSuiteToken)}` : '';
 
-      const [resTemplates, resCanais] = await Promise.all([
-        fetch(`/api/opasuite/templates?companyId=${company.id}${directUrlParam}${directTokenParam}`),
-        fetch(`/api/opasuite/canais?companyId=${company.id}&canal=Whatsapp${directUrlParam}${directTokenParam}`)
+      // 1. Busca Canais de WhatsApp e Departamentos em paralelo
+      const [resCanais, resDepts] = await Promise.all([
+        fetch(`/api/opasuite/canais?companyId=${company.id}&canal=Whatsapp${directUrlParam}${directTokenParam}`),
+        fetch(`/api/opasuite/departamentos?companyId=${company.id}${directUrlParam}${directTokenParam}`)
       ]);
 
-      let templateCount = 0;
       let channelCount = 0;
+      let deptCount = 0;
+      let targetCanalId = company.opaSuiteCanalId;
 
+      if (resCanais.ok) {
+        const data = await resCanais.json();
+        const channels: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
+        setOpaChannels(channels);
+        channelCount = channels.length;
+        if (channels.length > 0) {
+          if (!targetCanalId) {
+            const active = channels.find(c => c.status === 'A') || channels[0];
+            targetCanalId = active._id;
+            setCompany(prev => ({ ...prev, opaSuiteCanalId: active._id }));
+          }
+        }
+      }
+
+      if (resDepts.ok) {
+        const data = await resDepts.json();
+        const depts: OpaDepartment[] = Array.isArray(data) ? data : (data.data || data.registros || []);
+        setOpaDepartments(depts);
+        deptCount = depts.length;
+      }
+
+      // 2. Busca templates por canal (usando o targetCanalId selecionado)
+      const canalParam = targetCanalId ? `&canalId=${encodeURIComponent(targetCanalId)}` : '';
+      const resTemplates = await fetch(`/api/opasuite/templates?companyId=${company.id}${canalParam}${directUrlParam}${directTokenParam}`);
+
+      let templateCount = 0;
       if (resTemplates.ok) {
         const data = await resTemplates.json();
         const templates = Array.isArray(data) ? data : (data.data || data.registros || []);
@@ -144,21 +200,10 @@ export const CompanySettings: React.FC = () => {
         }
       }
 
-      if (resCanais.ok) {
-        const data = await resCanais.json();
-        const channels: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaChannels(channels);
-        channelCount = channels.length;
-        if (channels.length > 0 && !company.opaSuiteCanalId) {
-          const active = channels.find(c => c.status === 'A') || channels[0];
-          setCompany(prev => ({ ...prev, opaSuiteCanalId: active._id }));
-        }
-      }
-
-      if (resTemplates.ok || resCanais.ok) {
+      if (resCanais.ok || resDepts.ok || resTemplates.ok) {
         setOpaTestStatus({ 
           success: true, 
-          text: `Conexão bem-sucedida! ${channelCount} canal(is) WhatsApp e ${templateCount} template(s) identificados no Opa! Suite.` 
+          text: `Conexão bem-sucedida! ${channelCount} canal(is) WhatsApp, ${deptCount} departamento(s) e ${templateCount} template(s) identificados no Opa! Suite.` 
         });
       } else {
         const err = await resTemplates.json().catch(() => ({}));
@@ -464,10 +509,10 @@ export const CompanySettings: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
-                        <span>Canal WhatsApp Padrão</span>
+                        <span>Canal WhatsApp</span>
                         <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
                           <CheckCircle2 size={12} /> WhatsApp
                         </span>
@@ -476,7 +521,12 @@ export const CompanySettings: React.FC = () => {
                         <select
                           name="opaSuiteCanalId"
                           value={company.opaSuiteCanalId || ''}
-                          onChange={handleChange}
+                          onChange={(e) => {
+                            handleChange(e);
+                            if (e.target.value && company.id) {
+                              fetchOpaTemplates(company.id, e.target.value);
+                            }
+                          }}
                           className="block w-full rounded-lg border-emerald-300 border bg-white p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-medium text-gray-800"
                         >
                           <option value="">Selecione o canal WhatsApp...</option>
@@ -497,23 +547,68 @@ export const CompanySettings: React.FC = () => {
                         />
                       )}
                       <p className="mt-1 text-xs text-gray-500">
-                        Canal exclusivo do WhatsApp para envio das solicitações e notificações aos clientes.
+                        Canal exclusivo do WhatsApp para envio das mensagens.
                       </p>
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Template Padrão</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
+                        <span>Departamento (Opa! Suite)</span>
+                        {opaDepartments.length > 0 && (
+                          <span className="text-[11px] text-gray-400 font-normal">
+                            {opaDepartments.length} disponível(is)
+                          </span>
+                        )}
+                      </label>
+                      {opaDepartments.length > 0 ? (
+                        <select
+                          name="opaSuiteDefaultDepartmentId"
+                          value={company.opaSuiteDefaultDepartmentId || ''}
+                          onChange={handleChange}
+                          className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                        >
+                          <option value="">Selecione o departamento (opcional)...</option>
+                          {opaDepartments.map(d => (
+                            <option key={d._id} value={d._id}>
+                              {d.nome} {d.status === 'A' ? '• Ativo' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          name="opaSuiteDefaultDepartmentId"
+                          value={company.opaSuiteDefaultDepartmentId || ''}
+                          onChange={handleChange}
+                          className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
+                          placeholder="ID do Departamento (opcional)"
+                        />
+                      )}
+                      <p className="mt-1 text-xs text-gray-500">
+                        Departamento de atendimento associado.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
+                        <span>Template Padrão</span>
+                        {opaTemplates.length > 0 && (
+                          <span className="text-[11px] text-emerald-600 font-semibold">
+                            {opaTemplates.length} do canal
+                          </span>
+                        )}
+                      </label>
                       {opaTemplates.length > 0 ? (
                         <select
                           name="opaSuiteDefaultTemplateId"
                           value={company.opaSuiteDefaultTemplateId || ''}
                           onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                          className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                         >
                           <option value="">Selecione o template padrão...</option>
                           {opaTemplates.map(t => (
                             <option key={t._id} value={t._id}>
-                              {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto?.substring(0, 50)}...
+                              {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto?.substring(0, 45)}...
                             </option>
                           ))}
                         </select>
@@ -528,7 +623,7 @@ export const CompanySettings: React.FC = () => {
                         />
                       )}
                       <p className="mt-1 text-xs text-gray-500">
-                        Template selecionado por padrão ao clicar em "Enviar Solicitação".
+                        Template do canal selecionado por padrão ao enviar.
                       </p>
                     </div>
                   </div>

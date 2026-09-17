@@ -37,6 +37,16 @@ export interface Company {
   opaSuiteToken?: string;
   opaSuiteCanalId?: string;
   opaSuiteDefaultTemplateId?: string;
+  opaSuiteDefaultDepartmentId?: string;
+}
+
+export interface OpaDepartment {
+  _id: string;
+  nome: string;
+  descricao?: string;
+  status?: string;
+  ordem?: number;
+  realizaAtendimento?: boolean;
 }
 
 export interface OpaChannel {
