@@ -20,7 +20,20 @@ import {
   Calendar,
   CheckCircle2,
   BarChart3,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  UserPlus,
+  UserCheck,
+  Send,
+  CheckSquare,
+  Square,
+  Share2,
+  RefreshCw,
+  X,
+  Phone,
+  BadgeCheck,
+  ExternalLink,
+  Layers,
+  HardHat
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -35,7 +48,7 @@ import {
   PieChart,
   Pie
 } from 'recharts';
-import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty } from '../types';
+import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel } from '../types';
 
 interface ReportFilter {
   startDate: string;
@@ -53,6 +66,16 @@ export interface SubjectReportFilter {
   dateType: 'closing' | 'opening';
   subjectId: string;
   responseId: string;
+  status: string; // 'all' ou código da API (A, AN, EN, EX, AS, AG, F, C)
+}
+
+export interface OsAssignmentItem {
+  osId: string;
+  userId?: string;
+  technicianId?: string;
+  assignedName?: string;
+  assignedBy?: string;
+  createdAt?: string;
 }
 
 export interface SubjectItem {
@@ -82,7 +105,20 @@ export interface SubjectReportRow {
   openingDate: string;
   closingDate: string;
   status: string;
+  statusCode?: string;
 }
+
+export const OS_STATUS_OPTIONS = [
+  { value: 'all', label: 'TODOS OS STATUS' },
+  { value: 'A', label: 'A - Aberta' },
+  { value: 'AN', label: 'AN - Em Análise' },
+  { value: 'EN', label: 'EN - Encaminhada' },
+  { value: 'EX', label: 'EX - Em Execução' },
+  { value: 'AS', label: 'AS - Assumida' },
+  { value: 'AG', label: 'AG - Agendada' },
+  { value: 'F', label: 'F - Finalizada' },
+  { value: 'C', label: 'C - Cancelada' }
+];
 
 interface ReportData {
   technicianId: string;
@@ -149,7 +185,8 @@ export const Reports: React.FC = () => {
     endDate: getTodayLocal(),
     dateType: 'closing',
     subjectId: '',
-    responseId: ''
+    responseId: '',
+    status: 'all'
   });
 
   // Dados auxiliares para Assuntos e Respostas
@@ -173,13 +210,45 @@ export const Reports: React.FC = () => {
   const [hideTechnician, setHideTechnician] = useState<boolean>(false);
   const [currentUserName, setCurrentUserName] = useState<string>('Administrador');
   const [currentCompanyName, setCurrentCompanyName] = useState<string>('');
+  const [currentUser, setCurrentUser] = useState<SystemUser | null>(null);
+
+  // Atribuição de OS para Funcionários
+  const [osAssignments, setOsAssignments] = useState<Record<string, OsAssignmentItem>>({});
+  const [selectedOsIds, setSelectedOsIds] = useState<Set<string>>(new Set());
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [assigningOsIds, setAssigningOsIds] = useState<string[]>([]);
+  const [selectedTechForAssign, setSelectedTechForAssign] = useState<string>('');
+  const [isSavingAssignment, setIsSavingAssignment] = useState(false);
+  const [assignmentToast, setAssignmentToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Integração Opa! Suite (Enviar Solicitação / Template)
+  const [isOpaModalOpen, setIsOpaModalOpen] = useState(false);
+  const [opaTargetOs, setOpaTargetOs] = useState<SubjectReportRow | null>(null);
+  const [opaTemplatesList, setOpaTemplatesList] = useState<OpaTemplate[]>([]);
+  const [selectedOpaTemplateId, setSelectedOpaTemplateId] = useState<string>('');
+  const [opaChannelsList, setOpaChannelsList] = useState<OpaChannel[]>([]);
+  const [isLoadingOpaChannels, setIsLoadingOpaChannels] = useState<boolean>(false);
+  const [opaCanalId, setOpaCanalId] = useState<string>('');
+  const [opaClientPhone, setOpaClientPhone] = useState<string>('');
+  const [opaClientName, setOpaClientName] = useState<string>('');
+  const [opaClientCpf, setOpaClientCpf] = useState<string>('');
+  const [isSearchingOpaClient, setIsSearchingOpaClient] = useState(false);
+  const [isSendingOpa, setIsSendingOpa] = useState(false);
+  const [opaToast, setOpaToast] = useState<{ success: boolean; text: string } | null>(null);
+
+  const isEmployeeUser = currentUser?.role === 'employee';
+  const canAssignOS = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || Boolean(currentUser?.permissions?.canAssignOS);
 
   useEffect(() => {
     try {
       const savedSession = localStorage.getItem('unity_user_session');
       if (savedSession) {
         const u = JSON.parse(savedSession);
+        setCurrentUser(u);
         if (u?.name) setCurrentUserName(u.name);
+        if (u?.role === 'employee') {
+          setActiveSubTab('subjects');
+        }
       }
       const savedCompany = localStorage.getItem('unity_company_data');
       if (savedCompany) {
@@ -348,6 +417,273 @@ export const Reports: React.FC = () => {
       } catch (e) { console.error("Erro ao carregar regras", e); }
   };
 
+  const fetchOsAssignments = async (companyId?: string): Promise<Record<string, OsAssignmentItem>> => {
+      try {
+          const config = getApiConfig();
+          const cid = companyId || config?.id;
+          if (!cid) return {};
+          const res = await fetch(`/api/os-assignments?companyId=${cid}`);
+          if (res.ok) {
+              const data = await res.json();
+              setOsAssignments(data || {});
+              return data || {};
+          }
+      } catch (e) {
+          console.warn("Erro ao buscar atribuições de OS:", e);
+      }
+      return {};
+  };
+
+  const fetchOpaTemplatesList = async (companyId?: string) => {
+      try {
+          const config = getApiConfig();
+          const cid = companyId || config?.id;
+          if (!cid) return;
+          const res = await fetch(`/api/opasuite/templates?companyId=${cid}`);
+          if (res.ok) {
+              const data = await res.json();
+              const list = Array.isArray(data) ? data : (data.data || data.registros || []);
+              setOpaTemplatesList(list);
+          }
+      } catch (e) {
+          console.warn("Erro ao carregar templates do Opa! Suite:", e);
+      }
+  };
+
+  const fetchOpaChannelsList = async (companyId?: string) => {
+      setIsLoadingOpaChannels(true);
+      try {
+          const config = getApiConfig();
+          const cid = companyId || config?.id;
+          if (!cid) return [];
+          const res = await fetch(`/api/opasuite/canais?companyId=${cid}&canal=Whatsapp`);
+          if (res.ok) {
+              const data = await res.json();
+              const list: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
+              setOpaChannelsList(list);
+              // Pré-seleciona o canal WhatsApp automaticamente
+              if (list.length > 0) {
+                  setOpaCanalId(currentId => {
+                      if (currentId && list.some(c => c._id === currentId)) {
+                          return currentId;
+                      }
+                      const active = list.find(c => c.status === 'A') || list[0];
+                      return active._id;
+                  });
+              }
+              return list;
+          }
+      } catch (e) {
+          console.warn("Erro ao carregar canais do Opa! Suite:", e);
+      } finally {
+          setIsLoadingOpaChannels(false);
+      }
+      return [];
+  };
+
+  const handleOpenAssignModal = (osIds: string[]) => {
+      setAssigningOsIds(osIds);
+      if (osIds.length === 1) {
+          const existing = osAssignments[osIds[0]];
+          setSelectedTechForAssign(existing?.technicianId || existing?.userId || '');
+      } else {
+          setSelectedTechForAssign('');
+      }
+      setIsAssignModalOpen(true);
+  };
+
+  const handleSaveAssignment = async () => {
+      if (!selectedTechForAssign) {
+          alert('Selecione um funcionário ou técnico para atribuir.');
+          return;
+      }
+      const config = getApiConfig();
+      if (!config) return;
+
+      setIsSavingAssignment(true);
+      try {
+          const techObj = technicians.find(t => String(t.id) === selectedTechForAssign);
+          const empObj = employeesMap.get(selectedTechForAssign);
+          const assignedName = techObj?.name || empObj?.name || `Técnico #${selectedTechForAssign}`;
+
+          const res = await fetch('/api/os-assignments', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'x-company-id': config.id
+              },
+              body: JSON.stringify({
+                  companyId: config.id,
+                  osIds: assigningOsIds,
+                  technicianId: selectedTechForAssign,
+                  assignedName: assignedName,
+                  assignedBy: currentUserName
+              })
+          });
+
+          if (res.ok) {
+              await fetchOsAssignments(config.id);
+              setIsAssignModalOpen(false);
+              setSelectedOsIds(new Set());
+              setAssignmentToast({
+                  type: 'success',
+                  text: `${assigningOsIds.length} OS(s) atribuída(s) com sucesso para ${assignedName}!`
+              });
+              setTimeout(() => setAssignmentToast(null), 3500);
+          } else {
+              const err = await res.json();
+              alert(`Erro ao salvar atribuição: ${err.error || 'Erro desconhecido'}`);
+          }
+      } catch (e: any) {
+          alert(`Erro ao salvar atribuição: ${e.message}`);
+      } finally {
+          setIsSavingAssignment(false);
+      }
+  };
+
+  const handleUnassign = async (osId: string) => {
+      if (!confirm(`Deseja desatribuir a Ordem de Serviço #${osId}?`)) return;
+      const config = getApiConfig();
+      if (!config) return;
+
+      try {
+          const res = await fetch(`/api/os-assignments/${osId}?companyId=${config.id}`, {
+              method: 'DELETE'
+          });
+          if (res.ok) {
+              await fetchOsAssignments(config.id);
+              setIsAssignModalOpen(false);
+              setAssignmentToast({ type: 'success', text: `Atribuição da OS #${osId} removida!` });
+              setTimeout(() => setAssignmentToast(null), 3000);
+          }
+      } catch (e: any) {
+          alert(`Erro ao remover atribuição: ${e.message}`);
+      }
+  };
+
+  const handleOpenOpaModal = async (row: SubjectReportRow) => {
+      setOpaTargetOs(row);
+      setOpaToast(null);
+      setIsOpaModalOpen(true);
+
+      const config = getApiConfig();
+      let clientPhone = '';
+      let clientName = clientCache[row.clientId] || row.clientName || '';
+      let clientCpf = '';
+
+      if (config && row.clientId) {
+          setIsSearchingOpaClient(true);
+          try {
+              const clientRes = await safeFetch(buildUrl(config, '/webservice/v1/cliente'), {
+                  method: 'POST',
+                  headers: config.headers,
+                  body: JSON.stringify({
+                      qtype: 'cliente.id',
+                      query: row.clientId,
+                      oper: '=',
+                      rp: '1'
+                  })
+              });
+              if (clientRes.registros && clientRes.registros.length > 0) {
+                  const c = clientRes.registros[0];
+                  clientName = c.razao || c.nome || clientName;
+                  clientPhone = c.telefone_celular || c.telefone || c.celular || c.whatsapp || '';
+                  clientCpf = c.cnpj_cpf || '';
+              }
+          } catch (e) {
+              console.warn("Erro ao buscar dados do cliente no IXC:", e);
+          } finally {
+              setIsSearchingOpaClient(false);
+          }
+      }
+
+      setOpaClientName(clientName);
+      setOpaClientPhone(clientPhone);
+      setOpaClientCpf(clientCpf);
+
+      if (config) {
+          fetchOpaTemplatesList(config.id);
+          fetchOpaChannelsList(config.id);
+      }
+
+      const savedCompany = localStorage.getItem('unity_company_data');
+      if (savedCompany) {
+          try {
+              const comp = JSON.parse(savedCompany);
+              if (comp.opaSuiteCanalId) setOpaCanalId(comp.opaSuiteCanalId);
+              if (comp.opaSuiteDefaultTemplateId) setSelectedOpaTemplateId(comp.opaSuiteDefaultTemplateId);
+          } catch (e) {}
+      }
+  };
+
+  const handleSendOpaTemplate = async () => {
+      if (!selectedOpaTemplateId) {
+          setOpaToast({ success: false, text: 'Selecione um template do Opa! Suite para enviar.' });
+          return;
+      }
+      if (!opaClientPhone || opaClientPhone.replace(/\D/g, '').length < 8) {
+          setOpaToast({ success: false, text: 'Informe um telefone/WhatsApp válido com DDD.' });
+          return;
+      }
+
+      const config = getApiConfig();
+      if (!config) return;
+
+      setIsSendingOpa(true);
+      setOpaToast(null);
+
+      try {
+          const rawDigits = opaClientPhone.replace(/\D/g, '');
+          const phoneWithCountry = rawDigits.startsWith('55') ? rawDigits : `55${rawDigits}`;
+
+          const payload = {
+              companyId: config.id,
+              canal: opaCanalId || undefined,
+              contato: {
+                  nome: opaClientName || (opaTargetOs ? `Cliente #${opaTargetOs.clientId}` : 'Cliente'),
+                  telefone: phoneWithCountry,
+                  cpf_cnpj: opaClientCpf || undefined
+              },
+              template: {
+                  _id: selectedOpaTemplateId
+              },
+              allowSendingToStartedCustomerService: true
+          };
+
+          const res = await fetch('/api/opasuite/send-template', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'x-company-id': config.id
+              },
+              body: JSON.stringify(payload)
+          });
+
+          const data = await res.json();
+          if (res.ok && (data.success || data.protocolo || data._id || data.id || !data.error)) {
+              setOpaToast({
+                  success: true,
+                  text: 'Solicitação e template enviados com sucesso ao Opa! Suite!'
+              });
+              setTimeout(() => {
+                  setIsOpaModalOpen(false);
+              }, 1800);
+          } else {
+              setOpaToast({
+                  success: false,
+                  text: `Erro ao enviar: ${data.error || 'Verifique se a integração e canal estão ativos no Opa! Suite.'}`
+              });
+          }
+      } catch (e: any) {
+          setOpaToast({
+              success: false,
+              text: `Falha na requisição: ${e.message || 'Erro de conexão'}`
+          });
+      } finally {
+          setIsSendingOpa(false);
+      }
+  };
+
   const fetchSubjectsAndResponses = async (config: any) => {
     setLoadingSubjectsAndResponses(true);
     try {
@@ -400,6 +736,8 @@ export const Reports: React.FC = () => {
     fetchSplitsFromBackend(config.id);
     fetchPenaltiesFromBackend(config.id);
     fetchSubjectsAndResponses(config);
+    fetchOsAssignments(config.id);
+    fetchOpaTemplatesList(config.id);
 
     try {
       // 1. Tentar buscar Funções (Cargos de RH)
@@ -599,10 +937,6 @@ export const Reports: React.FC = () => {
     points = points - totalPenalty;
 
     return points;
-  };
-
-  const handlePrint = () => {
-    window.print();
   };
 
   const handleGenerate = async () => {
@@ -1000,22 +1334,86 @@ export const Reports: React.FC = () => {
 
       setLoadingProgressSubject('Filtrando e processando assuntos e respostas...');
 
+      // Buscar atribuições mais recentes do backend
+      const latestAssignments = await fetchOsAssignments(config.id);
+      const targetEmpId = currentUser?.ixcEmployeeId ? String(currentUser.ixcEmployeeId) : '';
+      const currentUserIdStr = currentUser?.id ? String(currentUser.id) : '';
+
+      // Se for funcionário: assegurar que todas as OSs explicitamente atribuídas a ele sejam carregadas
+      if (isEmployeeUser && latestAssignments) {
+        const myAssignedIds = Object.keys(latestAssignments).filter(osId => {
+          const a = latestAssignments[osId];
+          return (
+            (a.userId && String(a.userId) === currentUserIdStr) ||
+            (targetEmpId && a.technicianId && String(a.technicianId) === targetEmpId) ||
+            (a.assignedName && currentUser?.name && a.assignedName.toLowerCase().trim() === currentUser.name.toLowerCase().trim())
+          );
+        });
+
+        for (const assignedId of myAssignedIds) {
+          if (!uniqueMap.has(assignedId) && !controller.signal.aborted) {
+            try {
+              const osRes = await safeFetch(url, {
+                method: 'POST',
+                headers: config.headers,
+                body: JSON.stringify({
+                  qtype: 'su_oss_chamado.id',
+                  query: assignedId,
+                  oper: '=',
+                  rp: '1'
+                }),
+                signal: controller.signal
+              });
+              if (osRes.registros && osRes.registros.length > 0) {
+                uniqueMap.set(assignedId, osRes.registros[0]);
+              }
+            } catch (err) {
+              console.warn(`Não foi possível carregar OS atribuída #${assignedId}`, err);
+            }
+          }
+        }
+      }
+
+      const ordersToProcess = Array.from(uniqueMap.values());
       const rows: SubjectReportRow[] = [];
       const clientIdsToResolve = new Set<string>();
 
-      for (const reg of uniqueOrders) {
-        // Validação de Data
-        const rawDate = subjectFilters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
-        
-        if (subjectFilters.dateType === 'closing') {
-          if (!rawDate || rawDate === '0000-00-00 00:00:00') {
-            continue; // Se filtrou por fechamento, descarta OS em aberto
+      for (const reg of ordersToProcess) {
+        // Validação de Status (se filtrado)
+        if (subjectFilters.status && subjectFilters.status !== 'all') {
+          if (reg.status !== subjectFilters.status) {
+            continue;
           }
         }
 
-        const relevantDate = (rawDate || '').split(' ')[0];
-        if (relevantDate < subjectFilters.startDate || relevantDate > subjectFilters.endDate) {
-          continue;
+        // Se for Funcionário: filtrar SOMENTE ordens atribuídas a ele pelo gestor/administrador
+        if (isEmployeeUser) {
+          const osAssign = (latestAssignments && latestAssignments[String(reg.id)]) || osAssignments[String(reg.id)];
+          const isAssigned = Boolean(
+            osAssign && (
+              (osAssign.userId && String(osAssign.userId) === currentUserIdStr) ||
+              (targetEmpId && osAssign.technicianId && String(osAssign.technicianId) === targetEmpId) ||
+              (osAssign.assignedName && currentUser?.name && osAssign.assignedName.toLowerCase().trim() === currentUser.name.toLowerCase().trim())
+            )
+          );
+
+          if (!isAssigned) {
+            continue;
+          }
+        } else {
+          // Validação de Data para gestores/administradores normais
+          const rawDate = subjectFilters.dateType === 'closing' ? reg.data_fechamento : reg.data_abertura;
+          
+          if (subjectFilters.dateType === 'closing') {
+            if (!rawDate || rawDate === '0000-00-00 00:00:00') {
+              continue; // Se filtrou por fechamento, descarta OS em aberto
+            }
+          }
+
+          const relevantDate = (rawDate || '').split(' ')[0];
+          if (relevantDate < subjectFilters.startDate || relevantDate > subjectFilters.endDate) {
+            continue;
+          }
         }
 
         // Validação de Assunto
@@ -1152,10 +1550,15 @@ export const Reports: React.FC = () => {
           }
         }
 
-        let statusText = 'Em Andamento';
-        if (reg.status === 'F') statusText = 'Fechado';
-        else if (reg.status === 'A') statusText = 'Aberto';
-        else if (reg.status === 'EN') statusText = 'Encaminhado';
+        let statusText = 'Em Aberto';
+        if (reg.status === 'F') statusText = 'Finalizada';
+        else if (reg.status === 'A') statusText = 'Aberta';
+        else if (reg.status === 'AN') statusText = 'Em Análise';
+        else if (reg.status === 'EN') statusText = 'Encaminhada';
+        else if (reg.status === 'EX') statusText = 'Em Execução';
+        else if (reg.status === 'AS') statusText = 'Assumida';
+        else if (reg.status === 'AG') statusText = 'Agendada';
+        else if (reg.status === 'C') statusText = 'Cancelada';
 
         rows.push({
           osId: String(reg.id),
@@ -1170,7 +1573,8 @@ export const Reports: React.FC = () => {
           responseContent: respContent,
           openingDate: reg.data_abertura || '-',
           closingDate: reg.data_fechamento && reg.data_fechamento !== '0000-00-00 00:00:00' ? reg.data_fechamento : 'EM ABERTO',
-          status: statusText
+          status: statusText,
+          statusCode: reg.status
         });
       }
 
@@ -1200,6 +1604,18 @@ export const Reports: React.FC = () => {
       }
     }
   };
+
+  // Listagem automática para funcionário ao abrir o relatório por assunto
+  const employeeAutoFetchedRef = useRef(false);
+  useEffect(() => {
+    if (activeSubTab === 'subjects' && isEmployeeUser && !subjectReportData && !isLoadingSubject && !employeeAutoFetchedRef.current) {
+      const config = getApiConfig();
+      if (config) {
+        employeeAutoFetchedRef.current = true;
+        handleGenerateSubjectReport();
+      }
+    }
+  }, [activeSubTab, isEmployeeUser, subjectReportData, isLoadingSubject, getApiConfig]);
 
   // Filtragem local rápida para a tabela do Relatório por Assunto
   const filteredSubjectRows = React.useMemo(() => {
@@ -1268,6 +1684,350 @@ export const Reports: React.FC = () => {
       });
   }, [subjectReportData]);
 
+  const escapeHtml = (str: string | undefined | null): string => {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  };
+
+  const handlePrintSubjectReportA4 = () => {
+    const rows = filteredSubjectRows;
+    if (!rows || rows.length === 0) {
+      alert('Nenhum dado para imprimir.');
+      return;
+    }
+
+    const printWin = window.open('', '_blank');
+    if (!printWin) {
+      window.print();
+      return;
+    }
+
+    const companyName = currentCompanyName || 'Empresa';
+    const emissionDate = new Date().toLocaleString('pt-BR');
+    const startFormatted = subjectFilters.startDate ? subjectFilters.startDate.split('-').reverse().join('/') : '-';
+    const endFormatted = subjectFilters.endDate ? subjectFilters.endDate.split('-').reverse().join('/') : '-';
+    const dateTypeLabel = subjectFilters.dateType === 'closing' ? 'Fechamento' : 'Abertura';
+    const statusLabel = subjectFilters.status ? (OS_STATUS_OPTIONS.find(o => o.value === subjectFilters.status)?.label || subjectFilters.status) : 'Todos';
+    const subjectLabel = subjectFilters.subjectId ? (availableSubjects.find(s => s.id === subjectFilters.subjectId)?.assunto || `#${subjectFilters.subjectId}`) : 'Todos os Assuntos';
+    const responseLabel = subjectFilters.responseId ? (availableResponses.find(r => r.id === subjectFilters.responseId)?.titulo || `#${subjectFilters.responseId}`) : 'Todas as Respostas';
+
+    const rowsHtml = rows.map((row) => {
+      const clientName = clientCache[row.clientId] || row.clientName;
+      const dateVal = subjectFilters.dateType === 'closing' ? formatDateBR(row.closingDate) : formatDateBR(row.openingDate);
+      
+      let statusClass = 'status-aberta';
+      if (row.status === 'Finalizada' || row.status === 'Fechado') statusClass = 'status-finalizada';
+      else if (row.status === 'Cancelada') statusClass = 'status-cancelada';
+
+      return `
+        <tr>
+          <td style="text-align: center; font-family: monospace; font-weight: bold;">#${escapeHtml(row.osId)}</td>
+          <td>
+            <div style="font-weight: bold; color: #0f172a;">${escapeHtml(clientName)}</div>
+            ${row.clientId ? `<div style="font-size: 7px; color: #64748b; font-family: monospace;">ID: #${escapeHtml(row.clientId)}</div>` : ''}
+          </td>
+          <td>
+            <div><span style="font-weight: bold;">#${escapeHtml(row.subjectId || '-')}:</span> ${escapeHtml(row.subjectTitle)}</div>
+          </td>
+          ${!hideTechnician ? `
+            <td>
+              <div style="font-weight: 600;">${escapeHtml(row.technicianName || 'Não Informado')}</div>
+              ${row.technicianId && row.technicianId !== '0' ? `<div style="font-size: 7px; color: #64748b; font-family: monospace;">ID: #${escapeHtml(row.technicianId)}</div>` : ''}
+            </td>
+          ` : ''}
+          <td>
+            ${row.responseId !== '-' ? `<div><span style="font-weight: bold;">#${escapeHtml(row.responseId)}:</span> ${escapeHtml(row.responseTitle)}</div>` : `<span style="color: #94a3b8; font-style: italic;">${escapeHtml(row.responseTitle)}</span>`}
+          </td>
+          <td>
+            ${row.responseContent !== '-' ? `<div style="white-space: pre-wrap; font-size: 7.5px;">${escapeHtml(row.responseContent)}</div>` : `<span style="color: #94a3b8; font-style: italic;">-</span>`}
+          </td>
+          <td style="text-align: center; white-space: nowrap;">
+            <div style="font-family: monospace; font-weight: 600;">${escapeHtml(dateVal)}</div>
+            <div style="font-size: 6.5px; color: #64748b; text-transform: uppercase;">${escapeHtml(dateTypeLabel)}</div>
+          </td>
+          <td style="text-align: center; white-space: nowrap;">
+            <span class="${statusClass}">${escapeHtml(row.status)}</span>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Relatório por Assunto - ${escapeHtml(companyName)}</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 8mm 6mm 10mm 6mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #ffffff;
+      font-size: 8pt;
+      line-height: 1.25;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 8px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      z-index: 999;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .toolbar button {
+      cursor: pointer;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 12px;
+      border: none;
+    }
+    .btn-print { background: #2563eb; color: #ffffff; margin-right: 8px; }
+    .btn-print:hover { background: #1d4ed8; }
+    .btn-close { background: #475569; color: #ffffff; }
+    .btn-close:hover { background: #334155; }
+    @media print {
+      .no-print { display: none !important; }
+    }
+    .header-box {
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 6px;
+      margin-bottom: 10px;
+    }
+    .company-title {
+      font-size: 13pt;
+      font-weight: 800;
+      color: #0f172a;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .doc-subtitle {
+      font-size: 10pt;
+      font-weight: 700;
+      color: #334155;
+      margin: 2px 0 6px 0;
+    }
+    .meta-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 8pt;
+      color: #334155;
+      background: #f8fafc;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+    }
+    .meta-item { display: flex; gap: 4px; align-items: center; }
+    .meta-label { font-weight: 700; color: #64748b; text-transform: uppercase; font-size: 7pt; }
+    .meta-value { font-weight: 600; color: #0f172a; }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 7.5pt;
+    }
+    thead {
+      display: table-header-group;
+    }
+    tr {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    th {
+      background-color: #1e293b !important;
+      color: #ffffff !important;
+      font-weight: 700;
+      font-size: 7.5pt;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      border: 1px solid #334155;
+      padding: 5px 4px;
+      text-align: left;
+    }
+    td {
+      border: 1px solid #cbd5e1;
+      padding: 4px 5px;
+      vertical-align: top;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+    tbody tr:nth-child(even) td {
+      background-color: #f8fafc;
+    }
+    .status-finalizada {
+      color: #166534;
+      background: #dcfce7;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 3px;
+      display: inline-block;
+      border: 1px solid #bbf7d0;
+      font-size: 7pt;
+    }
+    .status-aberta {
+      color: #854d0e;
+      background: #fef9c3;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 3px;
+      display: inline-block;
+      border: 1px solid #fef08a;
+      font-size: 7pt;
+    }
+    .status-cancelada {
+      color: #991b1b;
+      background: #fee2e2;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 3px;
+      display: inline-block;
+      border: 1px solid #fecaca;
+      font-size: 7pt;
+    }
+    .footer-summary {
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 7.5pt;
+      color: #64748b;
+      border-top: 1px solid #cbd5e1;
+      padding-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar no-print">
+    <div style="font-size: 13px; font-weight: 600;">
+      Visualização de Impressão A4 Paisagem (${rows.length} Ordens de Serviço)
+    </div>
+    <div>
+      <button class="btn-print" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+      <button class="btn-close" onclick="window.close()">✕ Fechar</button>
+    </div>
+  </div>
+
+  <div class="header-box">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+      <div>
+        <div class="company-title">${escapeHtml(companyName)}</div>
+        <div class="doc-subtitle">Relatório Sintético de Ordens de Serviço por Assunto</div>
+      </div>
+      <div style="text-align: right; font-size: 7.5pt; color: #64748b;">
+        <div>Emissão: <b>${escapeHtml(emissionDate)}</b></div>
+        <div>Layout A4 Paisagem Contínuo (Todas as Páginas)</div>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-item">
+        <span class="meta-label">Período:</span>
+        <span class="meta-value">${escapeHtml(startFormatted)} até ${escapeHtml(endFormatted)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Data Base:</span>
+        <span class="meta-value">${escapeHtml(dateTypeLabel)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Status:</span>
+        <span class="meta-value">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Assunto:</span>
+        <span class="meta-value">${escapeHtml(subjectLabel)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Resposta:</span>
+        <span class="meta-value">${escapeHtml(responseLabel)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Técnico:</span>
+        <span class="meta-value">${hideTechnician ? 'Ocultado' : 'Visível'}</span>
+      </div>
+      <div class="meta-item" style="margin-left: auto;">
+        <span class="meta-label">Total de Registros:</span>
+        <span class="meta-value" style="color: #2563eb; font-weight: 800;">${rows.length} OS</span>
+      </div>
+    </div>
+  </div>
+
+  <table>
+    <colgroup>
+      <col style="width: 7%;" />
+      <col style="width: ${hideTechnician ? '23%' : '18%'};" />
+      <col style="width: ${hideTechnician ? '18%' : '14%'};" />
+      ${!hideTechnician ? '<col style="width: 15%;" />' : ''}
+      <col style="width: ${hideTechnician ? '17%' : '14%'};" />
+      <col style="width: ${hideTechnician ? '23%' : '18%'};" />
+      <col style="width: 6%;" />
+      <col style="width: 5%;" />
+    </colgroup>
+    <thead>
+      <tr>
+        <th style="text-align: center;">ID OS</th>
+        <th>Cliente</th>
+        <th>Assunto</th>
+        ${!hideTechnician ? '<th>Técnico Resp.</th>' : ''}
+        <th>ID / Título Resposta</th>
+        <th>Resposta</th>
+        <th style="text-align: center;">Data (${escapeHtml(dateTypeLabel)})</th>
+        <th style="text-align: center;">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+  </table>
+
+  <div class="footer-summary">
+    <div>Sistema IXC Gestão &bull; Relatório operacional gerado para conferência de chamados e produtividade</div>
+    <div>Total de Ordens de Serviço: <b>${rows.length}</b></div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() {
+        window.print();
+      }, 350);
+    };
+  </script>
+</body>
+</html>`;
+
+    printWin.document.open();
+    printWin.document.write(htmlContent);
+    printWin.document.close();
+  };
+
+  const handlePrint = () => {
+    if (activeSubTab === 'subjects') {
+      handlePrintSubjectReportA4();
+    } else {
+      window.print();
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <style>{`
@@ -1278,16 +2038,25 @@ export const Reports: React.FC = () => {
 
         @media print {
           /* Reset geral de layout para impressão limpa em folha A4 */
-          html, body {
+          html, body, #root, #root > div, main {
             width: 100% !important;
             height: auto !important;
+            min-height: 0 !important;
+            max-width: 100% !important;
             margin: 0 !important;
             padding: 0 !important;
             background: #ffffff !important;
             color: #0f172a !important;
             font-size: 8pt !important;
+            overflow: visible !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
+          }
+
+          .max-w-6xl {
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
           }
 
           /* Ocultar elementos desnecessários na impressão */
@@ -1304,9 +2073,18 @@ export const Reports: React.FC = () => {
             margin: 0 !important;
             padding: 0 !important;
             border: none !important;
+            border-radius: 0 !important;
             box-shadow: none !important;
             overflow: visible !important;
             background: #ffffff !important;
+            animation: none !important;
+            transform: none !important;
+          }
+
+          .overflow-x-auto {
+            overflow: visible !important;
+            display: block !important;
+            width: 100% !important;
           }
 
           /* Tabela e quebra de páginas com layout fixo para evitar colunas cortadas */
@@ -1323,6 +2101,7 @@ export const Reports: React.FC = () => {
 
           .report-table tr {
             page-break-inside: avoid !important; /* Não corta a linha no meio */
+            break-inside: avoid !important;
             page-break-after: auto !important;
           }
 
@@ -1733,21 +2512,30 @@ export const Reports: React.FC = () => {
       {activeSubTab === 'subjects' && (
         <>
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print">
+            {isEmployeeUser && (
+              <div className="mb-4 p-3 bg-brand-50 border border-brand-200 rounded-lg flex items-center gap-3 text-xs text-brand-900">
+                <HardHat size={18} className="text-brand-600 shrink-0" />
+                <div>
+                  <span className="font-bold">Acesso de Funcionário:</span> Listando automaticamente apenas as Ordens de Serviço atribuídas ou direcionadas para você.
+                </div>
+              </div>
+            )}
+
             <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
               <Filter size={20} className="text-brand-600" /> Filtros do Relatório por Assunto
             </h3>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 lg:gap-5">
               {/* Datas */}
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-xs font-medium text-gray-500 mb-1">Data Inicial</label>
                     <input 
                       type="date" 
                       value={subjectFilters.startDate} 
                       onChange={e => setSubjectFilters({...subjectFilters, startDate: e.target.value})} 
-                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-xs focus:ring-brand-500 focus:border-brand-500" 
                     />
                   </div>
                   <div>
@@ -1756,7 +2544,7 @@ export const Reports: React.FC = () => {
                       type="date" 
                       value={subjectFilters.endDate} 
                       onChange={e => setSubjectFilters({...subjectFilters, endDate: e.target.value})} 
-                      className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500" 
+                      className="w-full rounded-lg border-gray-300 border p-2 text-xs focus:ring-brand-500 focus:border-brand-500" 
                     />
                   </div>
                 </div>
@@ -1766,12 +2554,29 @@ export const Reports: React.FC = () => {
                   <select 
                     value={subjectFilters.dateType} 
                     onChange={e => setSubjectFilters({...subjectFilters, dateType: e.target.value as 'closing' | 'opening'})} 
-                    className="w-full rounded-lg border-gray-300 border p-2 text-sm font-medium text-brand-700 bg-gray-50 focus:ring-brand-500 focus:border-brand-500"
+                    className="w-full rounded-lg border-gray-300 border p-2 text-xs font-medium text-brand-700 bg-gray-50 focus:ring-brand-500 focus:border-brand-500"
                   >
                     <option value="closing">Fechamento</option>
                     <option value="opening">Abertura</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Status da OS */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Status da OS</label>
+                <select 
+                  value={subjectFilters.status} 
+                  onChange={e => setSubjectFilters({...subjectFilters, status: e.target.value})} 
+                  className="w-full rounded-lg border-gray-300 border p-2 text-xs font-medium text-gray-800 bg-white focus:ring-brand-500 focus:border-brand-500"
+                >
+                  {OS_STATUS_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Filtrar por status do chamado na API
+                </p>
               </div>
 
               {/* Assunto */}
@@ -1783,7 +2588,7 @@ export const Reports: React.FC = () => {
                 <select 
                   value={subjectFilters.subjectId} 
                   onChange={e => setSubjectFilters({...subjectFilters, subjectId: e.target.value})} 
-                  className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500"
+                  className="w-full rounded-lg border-gray-300 border p-2 text-xs focus:ring-brand-500 focus:border-brand-500"
                 >
                   <option value="">TODOS OS ASSUNTOS ({availableSubjects.length})</option>
                   {availableSubjects.map(sub => (
@@ -1792,7 +2597,7 @@ export const Reports: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-gray-400 mt-1">
+                <p className="text-[10px] text-gray-400 mt-1">
                   Origem: API Assunto (su_oss_assunto)
                 </p>
               </div>
@@ -1806,7 +2611,7 @@ export const Reports: React.FC = () => {
                 <select 
                   value={subjectFilters.responseId} 
                   onChange={e => setSubjectFilters({...subjectFilters, responseId: e.target.value})} 
-                  className="w-full rounded-lg border-gray-300 border p-2 text-sm focus:ring-brand-500 focus:border-brand-500"
+                  className="w-full rounded-lg border-gray-300 border p-2 text-xs focus:ring-brand-500 focus:border-brand-500"
                 >
                   <option value="">TODAS AS RESPOSTAS ({availableResponses.length})</option>
                   {availableResponses.map(resp => (
@@ -1815,8 +2620,8 @@ export const Reports: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-gray-400 mt-1">
-                  Origem: API Resposta Padrão (su_oss_respostas)
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Origem: API Resposta (su_oss_respostas)
                 </p>
               </div>
 
@@ -1825,16 +2630,16 @@ export const Reports: React.FC = () => {
                 <button 
                   onClick={handleGenerateSubjectReport} 
                   disabled={isLoadingSubject} 
-                  className="w-full bg-brand-600 hover:bg-brand-700 text-white p-3 rounded-lg text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70"
+                  className="w-full bg-brand-600 hover:bg-brand-700 text-white p-2.5 rounded-lg text-xs font-bold shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-70 h-10"
                 >
                   {isLoadingSubject ? (
                     <>
-                      <Loader2 className="animate-spin" size={18} />
+                      <Loader2 className="animate-spin" size={16} />
                       <span className="truncate">{loadingProgressSubject || 'Processando...'}</span>
                     </>
                   ) : (
                     <>
-                      <FileText size={18} /> GERAR RELATÓRIO
+                      <FileText size={16} /> GERAR RELATÓRIO
                     </>
                   )}
                 </button>
@@ -2104,11 +2909,11 @@ export const Reports: React.FC = () => {
                     </div>
                     <div className="text-slate-400">•</div>
                     <div>
-                      Finalizadas: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status === 'Fechado').length}</strong>
+                      Finalizadas: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status === 'Finalizada' || r.status === 'Fechado').length}</strong>
                     </div>
                     <div className="text-slate-400">•</div>
                     <div>
-                      Em Aberto: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status === 'Aberto').length}</strong>
+                      Em Aberto: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.status !== 'Finalizada' && r.status !== 'Fechado' && r.status !== 'Cancelada').length}</strong>
                     </div>
                     <div className="text-slate-400">•</div>
                     <div>
@@ -2190,6 +2995,26 @@ export const Reports: React.FC = () => {
                     </colgroup>
                     <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase border-b border-gray-200">
                       <tr>
+                        {/* Checkbox de Seleção em Lote (somente tela e se canAssignOS) */}
+                        {canAssignOS && (
+                          <th className="px-2 py-2.5 text-center w-8 no-print">
+                            <input 
+                              type="checkbox" 
+                              checked={paginatedSubjectRows.length > 0 && paginatedSubjectRows.every(r => selectedOsIds.has(r.osId))}
+                              onChange={(e) => {
+                                const next = new Set(selectedOsIds);
+                                if (e.target.checked) {
+                                  paginatedSubjectRows.forEach(r => next.add(r.osId));
+                                } else {
+                                  paginatedSubjectRows.forEach(r => next.delete(r.osId));
+                                }
+                                setSelectedOsIds(next);
+                              }}
+                              title="Selecionar todas as OS desta página"
+                              className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-3.5 h-3.5 cursor-pointer"
+                            />
+                          </th>
+                        )}
                         <th className="px-3 py-2.5 text-center w-20 report-nowrap">ID OS</th>
                         <th className="px-3 py-2.5 min-w-[150px]">Cliente</th>
                         <th className="px-3 py-2.5 min-w-[140px]">Assunto</th>
@@ -2200,6 +3025,7 @@ export const Reports: React.FC = () => {
                         <th className="px-3 py-2.5 min-w-[180px]">Resposta</th>
                         <th className="px-3 py-2.5 min-w-[110px] text-center report-nowrap">Data</th>
                         <th className="px-3 py-2.5 text-center w-20 report-nowrap">Status</th>
+                        <th className="px-3 py-2.5 text-center min-w-[210px] no-print">Ações</th>
                       </tr>
                     </thead>
 
@@ -2208,9 +3034,28 @@ export const Reports: React.FC = () => {
                       {paginatedSubjectRows.map((row) => {
                         const resolvedClientName = clientCache[row.clientId] || row.clientName;
                         const isExpanded = expandedResponseOsId === row.osId;
+                        const assignment = osAssignments[row.osId];
+                        const isSelected = selectedOsIds.has(row.osId);
 
                         return (
-                          <tr key={`screen-${row.osId}`} className="hover:bg-gray-50 transition-colors">
+                          <tr key={`screen-${row.osId}`} className={`transition-colors ${isSelected ? 'bg-brand-50/40' : 'hover:bg-gray-50'}`}>
+                            {/* Checkbox de Seleção */}
+                            {canAssignOS && (
+                              <td className="px-2 py-2.5 text-center no-print">
+                                <input 
+                                  type="checkbox" 
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    const next = new Set(selectedOsIds);
+                                    if (e.target.checked) next.add(row.osId);
+                                    else next.delete(row.osId);
+                                    setSelectedOsIds(next);
+                                  }}
+                                  className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-3.5 h-3.5 cursor-pointer"
+                                />
+                              </td>
+                            )}
+
                             {/* ID OS */}
                             <td className="px-3 py-2.5 text-center font-mono font-bold text-brand-700 text-xs whitespace-nowrap">
                               #{row.osId}
@@ -2315,14 +3160,67 @@ export const Reports: React.FC = () => {
                             {/* Status */}
                             <td className="px-3 py-2.5 text-center whitespace-nowrap">
                               <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                row.status === 'Fechado' 
+                                row.status === 'Finalizada' || row.status === 'Fechado'
                                   ? 'bg-green-50 text-green-700 border border-green-200' 
-                                  : row.status === 'Aberto' 
+                                  : row.status === 'Aberta' || row.status === 'Aberto' 
                                   ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' 
+                                  : row.status === 'Cancelada'
+                                  ? 'bg-red-50 text-red-700 border border-red-200'
                                   : 'bg-blue-50 text-blue-700 border border-blue-200'
                               }`}>
                                 {row.status}
                               </span>
+                            </td>
+
+                            {/* Coluna Ações */}
+                            <td className="px-3 py-2.5 text-center no-print whitespace-nowrap">
+                              <div className="flex items-center justify-center gap-1.5">
+                                {/* Botão Atribuir Técnico/Funcionário (somente Adm ou Gestor com canAssignOS) */}
+                                {canAssignOS ? (
+                                  <div className="inline-flex items-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenAssignModal([row.osId])}
+                                      title={assignment ? `Atribuído para: ${assignment.assignedName}` : 'Atribuir esta OS para um técnico/funcionário'}
+                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors border shadow-2xs ${
+                                        assignment 
+                                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100' 
+                                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      {assignment ? <UserCheck size={12} className="text-emerald-600" /> : <UserPlus size={12} className="text-slate-500" />}
+                                      <span>{assignment ? (assignment.assignedName?.split(' ')[0] || 'Atribuído') : 'Atribuir'}</span>
+                                    </button>
+                                    {assignment && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUnassign(row.osId)}
+                                        title="Remover atribuição desta OS"
+                                        className="ml-1 text-slate-400 hover:text-red-600 p-0.5 rounded transition-colors"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  assignment && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      <UserCheck size={11} /> {assignment.assignedName?.split(' ')[0] || 'Atribuído'}
+                                    </span>
+                                  )
+                                )}
+
+                                {/* Botão Enviar Solicitação para Opa! Suite */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenOpaModal(row)}
+                                  title="Enviar Solicitação / Template para o cliente via Opa! Suite"
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors shadow-2xs"
+                                >
+                                  <Send size={12} className="text-brand-600" />
+                                  <span>Enviar Solicitação</span>
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -2330,7 +3228,7 @@ export const Reports: React.FC = () => {
 
                       {filteredSubjectRows.length === 0 && (
                         <tr>
-                          <td colSpan={hideTechnician ? 7 : 8} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideTechnician ? 9 : 10} className="p-8 text-center text-gray-500">
                             Nenhum registro encontrado para os filtros selecionados.
                           </td>
                         </tr>
@@ -2480,6 +3378,324 @@ export const Reports: React.FC = () => {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Barra Flutuante de Ações em Lote */}
+          {selectedOsIds.size > 0 && canAssignOS && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-4 border border-slate-700 no-print animate-in fade-in slide-in-from-bottom duration-200">
+              <div className="text-sm font-medium flex items-center gap-2">
+                <CheckSquare size={16} className="text-emerald-400" />
+                <span><strong className="text-emerald-400 font-bold">{selectedOsIds.size}</strong> OS(s) selecionada(s)</span>
+              </div>
+              <div className="h-4 w-px bg-slate-700" />
+              <button
+                type="button"
+                onClick={() => handleOpenAssignModal(Array.from(selectedOsIds))}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-colors shadow-sm"
+              >
+                <UserPlus size={14} />
+                <span>Atribuir Selecionadas</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedOsIds(new Set())}
+                className="text-xs text-slate-400 hover:text-white transition-colors"
+              >
+                Limpar Seleção
+              </button>
+            </div>
+          )}
+
+          {/* Notificação Toast de Atribuição */}
+          {assignmentToast && (
+            <div className={`fixed bottom-6 right-6 z-50 p-4 rounded-xl shadow-xl flex items-center gap-3 text-xs font-semibold no-print ${
+              assignmentToast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+            }`}>
+              <CheckCircle2 size={16} />
+              <span>{assignmentToast.text}</span>
+            </div>
+          )}
+
+          {/* Modal de Atribuição de OS para Técnico/Funcionário */}
+          {isAssignModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 no-print">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in duration-150">
+                <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <UserPlus className="text-brand-600" size={18} />
+                    <h3 className="font-bold text-gray-900 text-sm">
+                      {assigningOsIds.length > 1 
+                        ? `Atribuir ${assigningOsIds.length} Ordens de Serviço` 
+                        : `Atribuir Ordem de Serviço #${assigningOsIds[0]}`}
+                    </h3>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setIsAssignModalOpen(false)} 
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Selecione o Funcionário ou Técnico Responsável
+                    </label>
+                    <select
+                      value={selectedTechForAssign}
+                      onChange={e => setSelectedTechForAssign(e.target.value)}
+                      className="w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:ring-brand-500 focus:border-brand-500 bg-white"
+                    >
+                      <option value="">Selecione um colaborador...</option>
+                      {technicians.map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} (ID: #{t.id}) {t.role ? `• ${t.role}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-gray-500 mt-1.5">
+                      Ao atribuir, a OS ficará visível automaticamente no relatório de assunto deste funcionário quando ele acessar o sistema.
+                    </p>
+                  </div>
+
+                  {assigningOsIds.length === 1 && osAssignments[assigningOsIds[0]] && (
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1">
+                      <div className="font-semibold text-slate-700">Atribuição Atual:</div>
+                      <div className="text-slate-900 font-medium">
+                        {osAssignments[assigningOsIds[0]].assignedName} 
+                        {osAssignments[assigningOsIds[0]].assignedBy && (
+                          <span className="text-slate-500 font-normal"> (atribuído por {osAssignments[assigningOsIds[0]].assignedBy})</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+                  {assigningOsIds.length === 1 && osAssignments[assigningOsIds[0]] ? (
+                    <button
+                      type="button"
+                      onClick={() => handleUnassign(assigningOsIds[0])}
+                      className="text-xs font-semibold text-red-600 hover:text-red-700"
+                    >
+                      Desatribuir
+                    </button>
+                  ) : <div />}
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsAssignModalOpen(false)}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingAssignment || !selectedTechForAssign}
+                      onClick={handleSaveAssignment}
+                      className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm"
+                    >
+                      {isSavingAssignment ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      <span>Salvar Atribuição</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Enviar Solicitação para Opa! Suite */}
+          {isOpaModalOpen && opaTargetOs && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 no-print">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in duration-150">
+                <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <Send className="text-brand-600" size={18} />
+                    <div>
+                      <h3 className="font-bold text-gray-900 text-sm">Enviar Solicitação • Opa! Suite</h3>
+                      <span className="text-xs text-gray-500">Ordem de Serviço #{opaTargetOs.osId}</span>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setIsOpaModalOpen(false)} 
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+                  {/* Dados do Cliente */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-800">Dados do Contato (IXC)</span>
+                      {isSearchingOpaClient && (
+                        <span className="text-brand-600 flex items-center gap-1 text-[11px]">
+                          <Loader2 size={12} className="animate-spin" /> Buscando no IXC...
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 text-[11px] mb-0.5">Nome do Cliente</label>
+                      <input
+                        type="text"
+                        value={opaClientName}
+                        onChange={e => setOpaClientName(e.target.value)}
+                        className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-slate-500 text-[11px] mb-0.5">WhatsApp / Celular (com DDD)</label>
+                        <input
+                          type="text"
+                          placeholder="Ex: 11999998888"
+                          value={opaClientPhone}
+                          onChange={e => setOpaClientPhone(e.target.value)}
+                          className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-500 text-[11px] mb-0.5">CPF / CNPJ</label>
+                        <input
+                          type="text"
+                          value={opaClientCpf}
+                          onChange={e => setOpaClientCpf(e.target.value)}
+                          className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Escolha do Template */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex justify-between items-center">
+                      <span>Template de Mensagem do Opa! Suite</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const config = getApiConfig();
+                          if (config) fetchOpaTemplatesList(config.id);
+                        }}
+                        className="text-[11px] text-brand-600 hover:text-brand-800 flex items-center gap-1 font-normal"
+                      >
+                        <RefreshCw size={11} /> Atualizar Lista
+                      </button>
+                    </label>
+                    <select
+                      value={selectedOpaTemplateId}
+                      onChange={e => setSelectedOpaTemplateId(e.target.value)}
+                      className="w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:ring-brand-500 focus:border-brand-500 bg-white"
+                    >
+                      <option value="">Selecione um template cadastrado...</option>
+                      {opaTemplatesList.map(t => (
+                        <option key={t._id} value={t._id}>
+                          {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto?.substring(0, 60)}...
+                        </option>
+                      ))}
+                    </select>
+                    {opaTemplatesList.length === 0 && (
+                      <p className="text-[11px] text-amber-600 mt-1">
+                        Nenhum template encontrado. Verifique se a URL e Token do Opa! Suite estão configurados na aba Configurações da Empresa.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Pré-visualização do texto do Template */}
+                  {selectedOpaTemplateId && (
+                    <div>
+                      <span className="block text-[11px] font-semibold text-gray-500 mb-1">Pré-visualização da Mensagem:</span>
+                      <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg text-xs text-emerald-950 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto">
+                        {opaTemplatesList.find(t => t._id === selectedOpaTemplateId)?.texto || 'Sem conteúdo'}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Canal de Comunicação (Exclusivo WhatsApp) */}
+                  <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                        <MessageSquare className="text-emerald-600" size={15} />
+                        <span>Canal de Comunicação (WhatsApp)</span>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full border border-emerald-300 flex items-center gap-1">
+                        <CheckCircle2 size={10} className="text-emerald-600" />
+                        WhatsApp Pré-selecionado
+                      </span>
+                    </div>
+
+                    {isLoadingOpaChannels ? (
+                      <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
+                        <Loader2 size={13} className="animate-spin text-emerald-600" />
+                        <span>Carregando canal WhatsApp do Opa! Suite...</span>
+                      </div>
+                    ) : opaChannelsList.length > 0 ? (
+                      <div className="space-y-1.5">
+                        <select
+                          value={opaCanalId}
+                          onChange={e => setOpaCanalId(e.target.value)}
+                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
+                        >
+                          {opaChannelsList.map(c => (
+                            <option key={c._id} value={c._id}>
+                              {c.nome || 'Canal WhatsApp'} {c.integracao ? `(${c.integracao})` : ''} {c.status === 'A' ? '• Ativo' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-[11px] text-emerald-700">
+                          O canal WhatsApp acima foi selecionado automaticamente para este envio.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <input
+                          type="text"
+                          placeholder="ID do Canal WhatsApp (ex: 212b435c1...)"
+                          value={opaCanalId}
+                          onChange={e => setOpaCanalId(e.target.value)}
+                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
+                        />
+                        <p className="text-[11px] text-emerald-700">
+                          {opaCanalId ? 'Canal WhatsApp configurado na empresa ou informado manualmente.' : 'Será utilizado o canal WhatsApp padrão cadastrado na empresa.'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {opaToast && (
+                    <div className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
+                      opaToast.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
+                    }`}>
+                      <CheckCircle2 size={16} />
+                      <span>{opaToast.text}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-200 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsOpaModalOpen(false)}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                  >
+                    Fechar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSendingOpa || !selectedOpaTemplateId || !opaClientPhone}
+                    onClick={handleSendOpaTemplate}
+                    className="flex items-center gap-2 px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm"
+                  >
+                    {isSendingOpa ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    <span>Disparar Notificação</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}

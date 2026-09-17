@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2, HardHat } from 'lucide-react';
-import { User, Permission, Company } from '../types';
+import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2, HardHat, CheckSquare, Square, CheckCircle2 } from 'lucide-react';
+import { User, Permission, Company, SYSTEM_TABS, isTabAllowed } from '../types';
 
 interface IXCEmployee {
     id: string;
@@ -28,6 +28,8 @@ export const UserManagement: React.FC = () => {
       canManageCompany: false,
       canManageUsers: false,
       canViewScore: true,
+      canAssignOS: false,
+      allowedTabs: ['dashboard', 'pontua', 'reports', 'tv']
     },
     active: true,
     role: 'user',
@@ -106,10 +108,22 @@ export const UserManagement: React.FC = () => {
 
     if (user) {
       setEditingUser(user);
+      const existingTabs = user.permissions?.allowedTabs || 
+        (user.role === 'employee' ? ['dashboard', 'pontua'] : 
+         user.role === 'admin' ? ['dashboard', 'pontua', 'reports', 'users', 'settings', 'tv'] : 
+         ['dashboard', 'pontua', 'reports', 'tv']);
+
       setFormData({ 
           ...user, 
           password: '',
-          ixcEmployeeId: user.ixcEmployeeId || '' 
+          ixcEmployeeId: user.ixcEmployeeId || '',
+          permissions: {
+            canManageCompany: Boolean(user.permissions?.canManageCompany),
+            canManageUsers: Boolean(user.permissions?.canManageUsers),
+            canViewScore: user.permissions?.canViewScore !== false,
+            canAssignOS: user.permissions?.canAssignOS !== undefined ? user.permissions.canAssignOS : (user.role !== 'employee'),
+            allowedTabs: existingTabs
+          }
       });
     } else {
       setEditingUser(null);
@@ -121,6 +135,8 @@ export const UserManagement: React.FC = () => {
           canManageCompany: false,
           canManageUsers: false,
           canViewScore: true,
+          canAssignOS: true,
+          allowedTabs: ['dashboard', 'pontua', 'reports', 'tv']
         },
         active: true,
         role: 'user',
@@ -128,6 +144,62 @@ export const UserManagement: React.FC = () => {
       });
     }
     setIsModalOpen(true);
+  };
+
+  const handleRoleChange = (role: 'user' | 'employee' | 'admin') => {
+    let defaultTabs: string[] = ['dashboard', 'pontua'];
+    let canAssign = false;
+    let canManageComp = false;
+    let canManageUsr = false;
+
+    if (role === 'admin') {
+      defaultTabs = ['dashboard', 'pontua', 'reports', 'users', 'settings', 'tv'];
+      canAssign = true;
+      canManageComp = true;
+      canManageUsr = true;
+    } else if (role === 'user') {
+      defaultTabs = ['dashboard', 'pontua', 'reports', 'tv'];
+      canAssign = true;
+    } else if (role === 'employee') {
+      defaultTabs = ['dashboard', 'pontua'];
+      canAssign = false;
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      role,
+      permissions: {
+        ...prev.permissions,
+        allowedTabs: defaultTabs,
+        canAssignOS: canAssign,
+        canManageCompany: canManageComp,
+        canManageUsers: canManageUsr
+      }
+    }));
+  };
+
+  const toggleAllowedTab = (tabId: string) => {
+    const currentTabs = formData.permissions?.allowedTabs || [];
+    const newTabs = currentTabs.includes(tabId)
+      ? currentTabs.filter(t => t !== tabId)
+      : [...currentTabs, tabId];
+    setFormData(prev => ({
+      ...prev,
+      permissions: {
+        ...prev.permissions,
+        allowedTabs: newTabs
+      }
+    }));
+  };
+
+  const setAllTabs = (allowAll: boolean) => {
+    setFormData(prev => ({
+      ...prev,
+      permissions: {
+        ...prev.permissions,
+        allowedTabs: allowAll ? SYSTEM_TABS.map(t => t.id) : []
+      }
+    }));
   };
 
   const handleDelete = async (id: string) => {
@@ -168,6 +240,19 @@ export const UserManagement: React.FC = () => {
         if (res.ok) {
             setIsModalOpen(false);
             fetchUsers(currentCompanyId);
+
+            // Se editou o próprio usuário logado, sincroniza na hora a sessão local
+            const savedSession = localStorage.getItem('unity_user_session');
+            if (savedSession) {
+                try {
+                    const sess = JSON.parse(savedSession);
+                    if (editingUser && String(sess.id) === String(editingUser.id)) {
+                        const updatedSession = { ...sess, ...formData, permissions: formData.permissions };
+                        localStorage.setItem('unity_user_session', JSON.stringify(updatedSession));
+                        window.dispatchEvent(new Event('storage'));
+                    }
+                } catch (e) {}
+            }
         } else {
             const err = await res.json();
             alert(`Erro ao salvar: ${err.error || 'Erro desconhecido'}`);
@@ -256,9 +341,25 @@ export const UserManagement: React.FC = () => {
                   </span>
                 </td>
                 <td className="px-6 py-4">
-                  <div className="flex gap-2">
-                    {user.permissions.canManageCompany && <span title="Configurações" className="bg-gray-100 p-1 rounded"><Shield size={14} className="text-gray-600"/></span>}
-                    {user.permissions.canManageUsers && <span title="Usuários" className="bg-gray-100 p-1 rounded"><UserIcon size={14} className="text-gray-600"/></span>}
+                  <div className="flex flex-wrap gap-1.5 max-w-xs">
+                    {SYSTEM_TABS.map(tab => {
+                      const allowed = isTabAllowed(user, tab.id);
+                      if (!allowed) return null;
+                      return (
+                        <span 
+                          key={tab.id}
+                          className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200"
+                          title={tab.description}
+                        >
+                          {tab.label}
+                        </span>
+                      );
+                    })}
+                    {user.permissions?.canAssignOS && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        Atribui OS
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-6 py-4">
@@ -293,8 +394,8 @@ export const UserManagement: React.FC = () => {
 
       {/* Modal for Add/Edit User */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all animate-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden transform transition-all animate-in zoom-in duration-200 max-h-[92vh] flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
               <h3 className="text-lg font-bold text-gray-900">
                 {editingUser ? 'Editar Usuário' : 'Novo Usuário'}
@@ -304,27 +405,27 @@ export const UserManagement: React.FC = () => {
               </button>
             </div>
             
-            <form onSubmit={handleSave}>
-              <div className="p-6 space-y-4">
+            <form onSubmit={handleSave} className="flex-1 overflow-y-auto">
+              <div className="p-6 space-y-5">
                 
                 {/* Seleção de Função (Role) */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Acesso</label>
                   <select
                     value={formData.role}
-                    onChange={(e) => setFormData({...formData, role: e.target.value as any})}
+                    onChange={(e) => handleRoleChange(e.target.value as any)}
                     className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 bg-white"
                   >
                     <option value="user">Usuário (Gestor de Setor)</option>
-                    <option value="employee">Funcionário (Técnico / Restrito)</option>
+                    <option value="employee">Funcionário (Técnico / Atribuído)</option>
                     <option value="admin">Administrador Geral</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     {formData.role === 'employee' 
-                        ? 'Visualiza apenas seu próprio Dashboard e Pontuação.' 
+                        ? 'Permite ao Gestor atribuir Ordens de Serviço a este funcionário. Ao acessar "Relatórios por assunto", verá exclusivamente as OS atribuídas a ele.' 
                         : formData.role === 'user' 
-                        ? 'Pode visualizar relatórios gerais e dashboards.'
-                        : 'Acesso total ao sistema.'}
+                        ? 'Gestor com permissão para visualizar indicadores e atribuir chamados para os funcionários da equipe.'
+                        : 'Acesso total administrativo ao sistema.'}
                   </p>
                 </div>
 
@@ -350,81 +451,156 @@ export const UserManagement: React.FC = () => {
                             </select>
                         )}
                         <p className="text-xs text-amber-700 mt-2">
-                            O sistema usará este vínculo para filtrar automaticamente o Dashboard e Pontuação deste usuário.
+                            O sistema usará este vínculo para sincronizar o Dashboard, Pontuação e atribuições de Ordens de Serviço.
                         </p>
                     </div>
                 )}
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.name}
-                    onChange={e => setFormData({...formData, name: e.target.value})}
-                    className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email (Login)</label>
-                  <input
-                    type="email"
-                    required
-                    value={formData.email}
-                    onChange={e => setFormData({...formData, email: e.target.value})}
-                    className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                  />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.name}
+                      onChange={e => setFormData({...formData, name: e.target.value})}
+                      className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email (Login)</label>
+                    <input
+                      type="email"
+                      required
+                      value={formData.email}
+                      onChange={e => setFormData({...formData, email: e.target.value})}
+                      className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {editingUser ? 'Nova Senha (deixe em branco para manter)' : 'Senha'}
+                    {editingUser ? 'Nova Senha (deixe em branco para manter)' : 'Senha de Acesso'}
                   </label>
                   <input
                     type="password"
                     required={!editingUser}
                     value={formData.password}
                     onChange={e => setFormData({...formData, password: e.target.value})}
+                    placeholder={editingUser ? '••••••••' : 'Defina a senha'}
                     className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                   />
                 </div>
 
-                {formData.role !== 'employee' && (
-                <div className="border-t border-gray-100 pt-4 mt-2">
-                  <p className="block text-sm font-medium text-gray-700 mb-3">Permissões de Acesso</p>
-                  <div className="space-y-3">
-                    <label className="flex items-center gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer">
+                {/* Seção 1: Controle Granular de Abas do Sistema */}
+                <div className="border border-gray-200 rounded-xl p-4 bg-slate-50/50">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-900">Abas Permitidas no Sistema</h4>
+                      <p className="text-xs text-gray-500">Marque as abas que este usuário poderá visualizar e acessar no menu lateral.</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAllTabs(true)}
+                        className="text-xs font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 px-2 py-1 rounded border border-brand-200 hover:bg-brand-100 transition-colors"
+                      >
+                        Permitir Todas
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAllTabs(false)}
+                        className="text-xs font-semibold text-gray-600 hover:text-gray-700 bg-white px-2 py-1 rounded border border-gray-200 hover:bg-gray-100 transition-colors"
+                      >
+                        Bloquear Todas
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    {SYSTEM_TABS.map(tab => {
+                      const isChecked = (formData.permissions?.allowedTabs || []).includes(tab.id);
+                      return (
+                        <div
+                          key={tab.id}
+                          onClick={() => toggleAllowedTab(tab.id)}
+                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all select-none ${
+                            isChecked
+                              ? 'bg-white border-brand-300 shadow-xs ring-1 ring-brand-200'
+                              : 'bg-gray-50/80 border-gray-200 opacity-70 hover:opacity-100'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleAllowedTab(tab.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-0.5 w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500 cursor-pointer"
+                          />
+                          <div className="flex-1">
+                            <span className="block text-sm font-semibold text-gray-900">{tab.label}</span>
+                            <span className="block text-xs text-gray-500 leading-relaxed">{tab.description}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Seção 2: Permissões Operacionais e Atribuição de OS */}
+                <div className="border border-gray-200 rounded-xl p-4 bg-white">
+                  <h4 className="text-sm font-bold text-gray-900 mb-1">Permissões de Gestão e Operação</h4>
+                  <p className="text-xs text-gray-500 mb-3">Controle de atribuição de ordens de serviço e privilégios administrativos.</p>
+                  
+                  <div className="space-y-2.5">
+                    <label className="flex items-start gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
+                      <input 
+                        type="checkbox"
+                        checked={formData.permissions?.canAssignOS}
+                        onChange={() => togglePermission('canAssignOS')}
+                        className="mt-0.5 w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
+                      />
+                      <div>
+                        <span className="block text-sm font-semibold text-gray-900">Atribuir Ordens de Serviço a Funcionários</span>
+                        <span className="block text-xs text-gray-500">
+                          Habilita a coluna Ações nos relatórios para que o Gestor/Admin vincule ordens de serviço diretamente aos funcionários.
+                        </span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
                       <input 
                         type="checkbox"
                         checked={formData.permissions?.canManageCompany}
                         onChange={() => togglePermission('canManageCompany')}
-                        className="w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
+                        className="mt-0.5 w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
                       />
                       <div>
-                        <span className="block text-sm font-medium text-gray-900">Configurações da Empresa</span>
-                        <span className="block text-xs text-gray-500">Pode editar dados e token IXC</span>
+                        <span className="block text-sm font-semibold text-gray-900">Gerenciar Configurações da Empresa</span>
+                        <span className="block text-xs text-gray-500">Pode alterar dados cadastrais, tokens de integração IXC Soft e Opa! Suite.</span>
                       </div>
                     </label>
 
-                    <label className="flex items-center gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer">
+                    <label className="flex items-start gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
                       <input 
                         type="checkbox"
                         checked={formData.permissions?.canManageUsers}
                         onChange={() => togglePermission('canManageUsers')}
-                        className="w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
+                        className="mt-0.5 w-4 h-4 text-brand-600 border-gray-300 rounded focus:ring-brand-500"
                       />
                       <div>
-                        <span className="block text-sm font-medium text-gray-900">Gestão de Usuários</span>
-                        <span className="block text-xs text-gray-500">Pode adicionar, editar e remover usuários</span>
+                        <span className="block text-sm font-semibold text-gray-900">Gerenciar Usuários e Permissões</span>
+                        <span className="block text-xs text-gray-500">Pode cadastrar, editar permissões de abas e remover usuários da empresa.</span>
                       </div>
                     </label>
                   </div>
                 </div>
-                )}
+
               </div>
 
-              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3 sticky bottom-0 z-10">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}

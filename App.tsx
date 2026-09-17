@@ -8,7 +8,7 @@ import { Reports } from './pages/Reports';
 import { SuperAdminDashboard } from './pages/SuperAdminDashboard';
 import { TvDashboard } from './pages/TvDashboard';
 import { EmployeeDashboard } from './pages/EmployeeDashboard';
-import { AuthState, Company, User } from './types';
+import { AuthState, Company, User, isTabAllowed } from './types';
 import { 
   RefreshCw, 
   ClipboardList, 
@@ -59,6 +59,17 @@ const App: React.FC = () => {
   const [loadingDashboard, setLoadingDashboard] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+
+  // Garante que o usuário só acesse abas permitidas
+  useEffect(() => {
+    if (auth.isAuthenticated && auth.user) {
+      if (!isTabAllowed(auth.user, activeTab)) {
+        const candidateTabs = ['dashboard', 'pontua', 'reports', 'users', 'settings'];
+        const firstAllowed = candidateTabs.find(t => isTabAllowed(auth.user, t)) || 'dashboard';
+        setActiveTab(firstAllowed);
+      }
+    }
+  }, [auth.user, activeTab, auth.isAuthenticated]);
 
   const handleLogin = (user: User) => {
     setAuth({
@@ -261,7 +272,7 @@ const App: React.FC = () => {
   const isEmployee = auth.user?.role === 'employee';
 
   return (
-    <div className="flex min-h-screen bg-gray-50 font-sans relative">
+    <div className="flex min-h-screen bg-gray-50 font-sans relative print:block print:min-h-0 print:bg-white print:overflow-visible">
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
@@ -272,7 +283,7 @@ const App: React.FC = () => {
       />
 
       {/* Conteúdo Principal com Ajuste Responsivo */}
-      <div className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300 w-full print:ml-0 print:p-0 print:m-0">
+      <div className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300 w-full print:ml-0 print:p-0 print:m-0 print:block print:w-full print:overflow-visible">
         
         {/* Mobile Header Bar */}
         <div className="md:hidden flex items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100 no-print print:hidden">
@@ -404,10 +415,10 @@ const App: React.FC = () => {
           )
         )}
 
-        {activeTab === 'users' && <UserManagement />}
-        {activeTab === 'settings' && <CompanySettings />}
-        {activeTab === 'pontua' && <ScoreManagement />}
-        {activeTab === 'reports' && <Reports />}
+        {activeTab === 'users' && isTabAllowed(auth.user, 'users') && <UserManagement />}
+        {activeTab === 'settings' && isTabAllowed(auth.user, 'settings') && <CompanySettings />}
+        {activeTab === 'pontua' && isTabAllowed(auth.user, 'pontua') && <ScoreManagement />}
+        {activeTab === 'reports' && isTabAllowed(auth.user, 'reports') && <Reports />}
       </div>
     </div>
   );

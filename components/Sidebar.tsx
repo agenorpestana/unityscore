@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, Users, Settings, LogOut, Network, Trophy, FileText, MonitorPlay, X } from 'lucide-react';
-import { User } from '../types';
+import { User, isTabAllowed } from '../types';
 
 interface SidebarProps {
   activeTab: string;
@@ -14,32 +14,42 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, userName, isOpen, onClose }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
+  const syncUserSession = () => {
+    const savedSession = localStorage.getItem('unity_user_session');
+    if (savedSession) {
+      try {
+        setCurrentUser(JSON.parse(savedSession));
+      } catch (e) {}
+    }
+  };
+
   useEffect(() => {
-     const savedSession = localStorage.getItem('unity_user_session');
-     if (savedSession) {
-         try {
-             setCurrentUser(JSON.parse(savedSession));
-         } catch (e) {}
-     }
+    syncUserSession();
+    window.addEventListener('storage', syncUserSession);
+    return () => window.removeEventListener('storage', syncUserSession);
   }, []);
 
   const isEmployee = currentUser?.role === 'employee';
 
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, visible: true },
-    { id: 'pontua', label: 'Pontua', icon: Trophy, visible: true },
-    { id: 'reports', label: 'Relatórios', icon: FileText, visible: !isEmployee },
-    { id: 'users', label: 'Usuários', icon: Users, visible: !isEmployee },
-    { id: 'settings', label: 'Configurações', icon: Settings, visible: !isEmployee },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'pontua', label: 'Pontua', icon: Trophy },
+    { id: 'reports', label: 'Relatórios', icon: FileText },
+    { id: 'users', label: 'Usuários', icon: Users },
+    { id: 'settings', label: 'Configurações', icon: Settings },
   ];
+
+  // Filtra itens visíveis respeitando estritamente as permissões do usuário
+  const visibleMenuItems = menuItems.filter(item => isTabAllowed(currentUser, item.id));
+  const canAccessTv = isTabAllowed(currentUser, 'tv');
 
   const openTvMode = () => {
     window.open('?mode=tv', '_blank');
   };
 
   const handleTabClick = (id: string) => {
-      setActiveTab(id);
-      onClose(); // Fecha o menu ao clicar em um item no mobile
+    setActiveTab(id);
+    onClose(); // Fecha o menu ao clicar em um item no mobile
   };
 
   return (
@@ -75,7 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
         </div>
 
         <nav className="flex-1 py-6 px-3 space-y-1 overflow-y-auto">
-          {menuItems.filter(i => i.visible).map((item) => {
+          {visibleMenuItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
@@ -94,16 +104,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
             );
           })}
 
-          {!isEmployee && (
-          <div className="pt-4 mt-4 border-t border-slate-800">
-             <button
+          {canAccessTv && (
+            <div className="pt-4 mt-4 border-t border-slate-800">
+              <button
                 onClick={openTvMode}
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-emerald-400 hover:bg-emerald-900/20 transition-colors duration-200"
               >
                 <MonitorPlay size={20} />
                 <span className="font-medium">Modo TV / Público</span>
               </button>
-          </div>
+            </div>
           )}
         </nav>
 
@@ -115,7 +125,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
             <div className="overflow-hidden">
               <p className="text-sm font-medium truncate">{userName}</p>
               <p className="text-xs text-slate-400">
-                  {isEmployee ? 'Técnico' : 'Admin'}
+                {isEmployee ? 'Funcionário' : (currentUser?.role === 'user' ? 'Gestor' : 'Admin')}
               </p>
             </div>
           </div>
@@ -131,3 +141,4 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLog
     </>
   );
 };
+

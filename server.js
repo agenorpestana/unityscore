@@ -3,6 +3,8 @@ const path = require('path');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 
 // Tenta ler o .env manualmente para garantir que o PM2 não sobrescreva com variáveis vazias
 const envPath = path.join(__dirname, '.env');
@@ -81,6 +83,10 @@ async function initDatabase() {
         await addColumnSafe('companies', 'address VARCHAR(255)');
         await addColumnSafe('companies', 'phone VARCHAR(50)');
         await addColumnSafe('companies', 'logo_url LONGTEXT'); 
+        await addColumnSafe('companies', 'opa_suite_url VARCHAR(255)'); 
+        await addColumnSafe('companies', 'opa_suite_token VARCHAR(255)'); 
+        await addColumnSafe('companies', 'opa_suite_canal_id VARCHAR(100)'); 
+        await addColumnSafe('companies', 'opa_suite_default_template_id VARCHAR(100)'); 
 
         // Migrations Users
         await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
@@ -97,6 +103,19 @@ async function initDatabase() {
 
         // Tabela de Splits (Divisão de Pontos por OS)
         await connection.query(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
+
+        // Tabela de Atribuição de OS para Funcionários/Técnicos
+        await connection.query(`CREATE TABLE IF NOT EXISTS os_assignments (
+            id INT AUTO_INCREMENT PRIMARY KEY, 
+            company_id INT NOT NULL, 
+            os_id VARCHAR(50) NOT NULL, 
+            user_id VARCHAR(50), 
+            technician_id VARCHAR(50), 
+            assigned_name VARCHAR(255), 
+            assigned_by VARCHAR(255), 
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+            UNIQUE KEY unique_assignment (company_id, os_id)
+        )`);
 
         // Tabela de Penalizações (Penalties)
         try {
@@ -130,7 +149,7 @@ initDatabase();
 // Obter Configurações
 app.get('/api/companies/:id', async (req, res) => {
     try {
-        const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url FROM companies WHERE id = ?', [req.params.id]);
+        const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id FROM companies WHERE id = ?', [req.params.id]);
         if (rows.length > 0) {
             // Normaliza para camelCase para o frontend
             const c = rows[0];
@@ -143,7 +162,11 @@ app.get('/api/companies/:id', async (req, res) => {
                 address: c.address,
                 ixcDomain: c.ixc_domain,
                 ixcToken: c.ixc_token,
-                logoUrl: c.logo_url
+                logoUrl: c.logo_url,
+                opaSuiteUrl: c.opa_suite_url || '',
+                opaSuiteToken: c.opa_suite_token || '',
+                opaSuiteCanalId: c.opa_suite_canal_id || '',
+                opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || ''
             });
         } else {
             res.status(404).json({ error: 'Empresa não encontrada' });
@@ -155,13 +178,13 @@ app.get('/api/companies/:id', async (req, res) => {
 
 // Atualizar Configurações
 app.put('/api/companies/:id', async (req, res) => {
-    const { name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl } = req.body;
+    const { name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId } = req.body;
     try {
         await pool.query(`
             UPDATE companies 
-            SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?
+            SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?
             WHERE id=?
-        `, [name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, req.params.id]);
+        `, [name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, req.params.id]);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -397,6 +420,365 @@ app.delete('/api/os-penalties/:id', async (req, res) => {
     } catch (e) { 
         console.error('Erro ao deletar penalização (DELETE /api/os-penalties):', e);
         res.status(500).json({ error: e.message }); 
+    }
+});
+
+// --- ROTAS DE ATRIBUIÇÃO DE OS PARA FUNCIONÁRIOS ---
+
+// Obter Atribuições (Retorna mapa { [os_id]: { osId, userId, technicianId, assignedName, assignedBy, createdAt } })
+app.get('/api/os-assignments', async (req, res) => {
+    const companyId = req.query.companyId || req.headers['x-company-id'];
+    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
+    try {
+        const [rows] = await pool.query('SELECT os_id, user_id, technician_id, assigned_name, assigned_by, created_at FROM os_assignments WHERE company_id = ?', [companyId]);
+        const map = {};
+        rows.forEach(r => {
+            map[r.os_id] = {
+                osId: r.os_id,
+                userId: r.user_id,
+                technicianId: r.technician_id,
+                assignedName: r.assigned_name,
+                assignedBy: r.assigned_by,
+                createdAt: r.created_at
+            };
+        });
+        res.json(map);
+    } catch (e) {
+        console.error('Erro ao buscar atribuições:', e);
+        res.status(200).json({});
+    }
+});
+
+// Salvar Atribuição (Suporta atribuição individual ou em lote)
+app.post('/api/os-assignments', async (req, res) => {
+    const { companyId, osIds, osId, userId, technicianId, assignedName, assignedBy } = req.body;
+    const cid = companyId || req.headers['x-company-id'];
+    if (!cid) return res.status(400).json({ error: 'Company ID required' });
+
+    const targetOsIds = Array.isArray(osIds) ? osIds : (osId ? [osId] : []);
+    if (targetOsIds.length === 0) return res.status(400).json({ error: 'Nenhuma OS informada.' });
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        for (const targetId of targetOsIds) {
+            await connection.query(`
+                INSERT INTO os_assignments (company_id, os_id, user_id, technician_id, assigned_name, assigned_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE 
+                    user_id = VALUES(user_id),
+                    technician_id = VALUES(technician_id),
+                    assigned_name = VALUES(assigned_name),
+                    assigned_by = VALUES(assigned_by)
+            `, [cid, targetId, userId || null, technicianId || null, assignedName || null, assignedBy || null]);
+        }
+        await connection.commit();
+        res.json({ success: true, count: targetOsIds.length });
+    } catch (e) {
+        await connection.rollback();
+        console.error('Erro ao atribuir OS:', e);
+        res.status(500).json({ error: e.message });
+    } finally {
+        connection.release();
+    }
+});
+
+// Remover Atribuição
+app.delete('/api/os-assignments/:osId', async (req, res) => {
+    const cid = req.query.companyId || req.headers['x-company-id'];
+    if (!cid) return res.status(400).json({ error: 'Company ID required' });
+    try {
+        await pool.query('DELETE FROM os_assignments WHERE company_id = ? AND os_id = ?', [cid, req.params.osId]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- ROTAS DE INTEGRAÇÃO OPA! SUITE (PROVEDOR WHATSAPP OFICIAL) ---
+
+// Helper para obter configuração Opa Suite da empresa
+async function getOpaSuiteConfig(companyId, directUrl, directToken) {
+    if (directUrl && directToken) {
+        let url = directUrl.trim();
+        if (url.endsWith('/')) url = url.slice(0, -1);
+        if (!url.startsWith('http')) url = 'https://' + url;
+        return { url, token: directToken.trim() };
+    }
+    if (!companyId) return null;
+    const [rows] = await pool.query('SELECT opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id FROM companies WHERE id = ?', [companyId]);
+    if (rows.length === 0 || !rows[0].opa_suite_url || !rows[0].opa_suite_token) {
+        return null;
+    }
+    let url = rows[0].opa_suite_url.trim();
+    if (url.endsWith('/')) url = url.slice(0, -1);
+    if (!url.startsWith('http')) url = 'https://' + url;
+    return {
+        url,
+        token: rows[0].opa_suite_token.trim(),
+        canalId: rows[0].opa_suite_canal_id,
+        templateId: rows[0].opa_suite_default_template_id
+    };
+}
+
+// Listar Clientes no Opa! Suite (suporta GET e POST)
+const handleOpaClientes = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
+    const directUrl = req.body?.directUrl || req.query.directUrl;
+    const directToken = req.body?.directToken || req.query.directToken;
+    const query = req.query.query || req.body?.query || '';
+    const filter = req.body?.filter;
+
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        let targetUrl = `${config.url}/api/v1/cliente/`;
+        if (query) {
+            targetUrl += `?query=${encodeURIComponent(query)}`;
+        } else if (filter) {
+            targetUrl += `?filter=${encodeURIComponent(JSON.stringify(filter))}`;
+        }
+
+        console.log(`Opa! Suite Buscando clientes em: ${targetUrl}`);
+
+        const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${config.token}`,
+                'Accept': 'application/json'
+            }
+        });
+
+        const textData = await response.text();
+        try {
+            const data = JSON.parse(textData);
+            res.status(response.status).json(data);
+        } catch {
+            res.status(response.status).send(textData);
+        }
+    } catch (e) {
+        console.error('Erro Opa! Suite Clientes:', e);
+        res.status(500).json({ error: 'Erro ao consultar Opa! Suite: ' + e.message });
+    }
+};
+
+app.get('/api/opasuite/clientes', handleOpaClientes);
+app.post('/api/opasuite/clientes', handleOpaClientes);
+
+// Listar Templates no Opa! Suite (suporta GET e POST)
+const handleOpaTemplates = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
+    const directUrl = req.body?.directUrl || req.query.directUrl;
+    const directToken = req.body?.directToken || req.query.directToken;
+
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        const targetUrl = `${config.url}/api/v1/template`;
+        console.log(`Opa! Suite Buscando templates em: ${targetUrl}`);
+
+        const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${config.token}`,
+                'Accept': 'application/json'
+            }
+        });
+
+        const textData = await response.text();
+        try {
+            const data = JSON.parse(textData);
+            res.status(response.status).json(data);
+        } catch {
+            res.status(response.status).send(textData);
+        }
+    } catch (e) {
+        console.error('Erro Opa! Suite Templates:', e);
+        res.status(500).json({ error: 'Erro ao listar templates Opa! Suite: ' + e.message });
+    }
+};
+
+app.get('/api/opasuite/templates', handleOpaTemplates);
+app.post('/api/opasuite/templates', handleOpaTemplates);
+
+// Listar Canais de Comunicação no Opa! Suite (suporta GET e POST)
+const handleOpaCanais = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
+    const directUrl = req.body?.directUrl || req.query.directUrl;
+    const directToken = req.body?.directToken || req.query.directToken;
+    const requestedCanal = req.query.canal || req.body?.canal || 'Whatsapp';
+    const customFilter = req.body?.filter;
+    const customOptions = req.body?.options || { limit: 100 };
+
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        const targetUrl = `${config.url}/api/v1/canal-comunicacao/`;
+        console.log(`Opa! Suite Buscando canais em: ${targetUrl} com canal: ${requestedCanal}`);
+
+        const filterPayload = customFilter ? customFilter : (requestedCanal && requestedCanal !== 'all' ? { canal: requestedCanal } : {});
+        const requestBody = {
+            filter: filterPayload,
+            options: customOptions
+        };
+
+        // Função de envio com Node http/https para suportar GET com body conforme a API do Opa! Suite
+        const fetchOpaChannelApi = (method, bodyData) => {
+            return new Promise((resolve, reject) => {
+                try {
+                    const parsedUrl = new URL(targetUrl);
+                    const protocol = parsedUrl.protocol === 'http:' ? http : https;
+                    const bodyBuffer = bodyData ? Buffer.from(typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData)) : null;
+
+                    const reqOptions = {
+                        hostname: parsedUrl.hostname,
+                        port: parsedUrl.port || (parsedUrl.protocol === 'http:' ? 80 : 443),
+                        path: parsedUrl.pathname + parsedUrl.search,
+                        method: method || 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${config.token}`,
+                            'Accept': 'application/json',
+                            ...(bodyBuffer ? {
+                                'Content-Type': 'application/json',
+                                'Content-Length': bodyBuffer.length
+                            } : {})
+                        }
+                    };
+
+                    const opaReq = protocol.request(reqOptions, (opaRes) => {
+                        let data = '';
+                        opaRes.on('data', chunk => data += chunk);
+                        opaRes.on('end', () => {
+                            resolve({ status: opaRes.statusCode || 200, data });
+                        });
+                    });
+
+                    opaReq.on('error', (err) => reject(err));
+                    if (bodyBuffer) {
+                        opaReq.write(bodyBuffer);
+                    }
+                    opaReq.end();
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        };
+
+        // 1. Tenta GET com body
+        let response = await fetchOpaChannelApi('GET', requestBody);
+        let parsed = null;
+        try {
+            parsed = JSON.parse(response.data);
+        } catch {}
+
+        let channels = [];
+        if (parsed && Array.isArray(parsed.data)) {
+            channels = parsed.data;
+        } else if (parsed && Array.isArray(parsed)) {
+            channels = parsed;
+        } else if (parsed && Array.isArray(parsed.registros)) {
+            channels = parsed.registros;
+        }
+
+        // 2. Se não encontrou canais com o filtro específico, tenta sem filtro para buscar todos
+        if (channels.length === 0) {
+            try {
+                const fallbackRes = await fetchOpaChannelApi('GET', { options: { limit: 100 } });
+                const fallbackParsed = JSON.parse(fallbackRes.data);
+                const allList = Array.isArray(fallbackParsed?.data) ? fallbackParsed.data : (Array.isArray(fallbackParsed) ? fallbackParsed : []);
+                if (allList.length > 0) {
+                    channels = allList;
+                    parsed = fallbackParsed;
+                }
+            } catch (errFallback) {
+                console.warn('Fallback listagem de canais sem filtro:', errFallback.message);
+            }
+        }
+
+        // Se o objetivo é WhatsApp, filtra em memória caso a API tenha retornado canais diversos
+        if (requestedCanal && requestedCanal !== 'all' && channels.length > 0) {
+            const lowerCanal = requestedCanal.toLowerCase();
+            const filteredWa = channels.filter(c => 
+                (c.canal && c.canal.toLowerCase() === lowerCanal) ||
+                (c.integracao && c.integracao.toLowerCase() === 'dialog360') ||
+                (c.nome && c.nome.toLowerCase().includes('whatsapp'))
+            );
+            if (filteredWa.length > 0) {
+                return res.status(200).json({
+                    status: 'success',
+                    code: 200,
+                    data: filteredWa
+                });
+            }
+        }
+
+        if (parsed) {
+            return res.status(response.status || 200).json(parsed);
+        } else {
+            return res.status(response.status || 200).send(response.data);
+        }
+    } catch (e) {
+        console.error('Erro Opa! Suite Canais:', e);
+        res.status(500).json({ error: 'Erro ao listar canais Opa! Suite: ' + e.message });
+    }
+};
+
+app.get('/api/opasuite/canais', handleOpaCanais);
+app.post('/api/opasuite/canais', handleOpaCanais);
+
+// Enviar Template no Opa! Suite
+app.post('/api/opasuite/send-template', async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body.companyId;
+    const { directUrl, directToken, contato, template, canal, allowSendingToStartedCustomerService } = req.body;
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        const channelToSend = canal || config.canalId;
+        if (!channelToSend) {
+            return res.status(400).json({ error: 'ID do Canal de comunicação não informado.' });
+        }
+
+        const targetUrl = `${config.url}/api/v1/template/send`;
+        console.log(`Opa! Suite Enviando template para: ${targetUrl}`);
+
+        const payload = {
+            contato: contato || {},
+            template: template || {},
+            canal: channelToSend,
+            allowSendingToStartedCustomerService: allowSendingToStartedCustomerService !== undefined ? allowSendingToStartedCustomerService : true
+        };
+
+        const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${config.token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const textData = await response.text();
+        try {
+            const data = JSON.parse(textData);
+            res.status(response.status).json(data);
+        } catch {
+            res.status(response.status).send(textData);
+        }
+    } catch (e) {
+        console.error('Erro Opa! Suite Enviar Template:', e);
+        res.status(500).json({ error: 'Erro ao enviar template Opa! Suite: ' + e.message });
     }
 });
 

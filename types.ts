@@ -1,8 +1,10 @@
 
 export interface Permission {
-  canManageCompany: boolean;
-  canManageUsers: boolean;
-  canViewScore: boolean;
+  canManageCompany?: boolean;
+  canManageUsers?: boolean;
+  canViewScore?: boolean;
+  canAssignOS?: boolean;
+  allowedTabs?: string[]; // ['dashboard', 'pontua', 'reports', 'users', 'settings', 'tv']
 }
 
 export interface User {
@@ -30,6 +32,21 @@ export interface Company {
   useCorsProxy: boolean;
   logoUrl: string | null;
   status?: 'active' | 'inactive' | 'suspended';
+  // Configurações Opa! Suite
+  opaSuiteUrl?: string;
+  opaSuiteToken?: string;
+  opaSuiteCanalId?: string;
+  opaSuiteDefaultTemplateId?: string;
+}
+
+export interface OpaChannel {
+  _id: string;
+  nome: string;
+  id_atendente?: string;
+  status?: string;
+  canal?: string;
+  integracao?: string;
+  prioridadeListagemAtendimentos?: number;
 }
 
 // Novos tipos para o SaaS Admin
@@ -112,3 +129,73 @@ export interface ServiceOrder {
   reopeningDate?: string;
   status: 'Aberto' | 'Fechado' | 'Em Andamento';
 }
+
+export interface OsAssignment {
+  id?: number;
+  osId: string;
+  userId?: string;
+  technicianId?: string;
+  assignedName?: string;
+  assignedBy?: string;
+  createdAt?: string;
+}
+
+export interface OpaCliente {
+  _id: string;
+  nome: string;
+  fantasia?: string;
+  cpf_cnpj?: string;
+  status?: string;
+  prospect?: boolean;
+  cliente?: boolean;
+  fornecedor?: boolean;
+  prestadorServico?: boolean;
+}
+
+export interface OpaTemplate {
+  _id: string;
+  texto: string;
+  atalho: string;
+  tipo_mensagem?: string;
+  departamentos?: string[];
+}
+
+export interface SystemTabItem {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export const SYSTEM_TABS: SystemTabItem[] = [
+  { id: 'dashboard', label: 'Dashboard', description: 'Visão geral das ordens de serviço e indicadores' },
+  { id: 'pontua', label: 'Pontua', description: 'Regras de pontuação e ranking de técnicos' },
+  { id: 'reports', label: 'Relatórios', description: 'Relatórios por funcionário e por assunto' },
+  { id: 'users', label: 'Usuários', description: 'Gestão de usuários, técnicos e permissões' },
+  { id: 'settings', label: 'Configurações', description: 'Dados da empresa, IXC Soft e Opa! Suite' },
+  { id: 'tv', label: 'Modo TV / Painel', description: 'Visualização de telão em tempo real para o time' }
+];
+
+export const isTabAllowed = (user: User | null | undefined, tabId: string): boolean => {
+  if (!user) return false;
+  if (user.role === 'super_admin' || user.role === 'saas_owner') return true;
+
+  const allowed = user.permissions?.allowedTabs;
+  if (Array.isArray(allowed)) {
+    return allowed.includes(tabId);
+  }
+
+  // Fallback para usuários cadastrados antes da migration de allowedTabs:
+  if (user.role === 'admin') return true;
+  if (user.role === 'user') {
+    if (tabId === 'dashboard' || tabId === 'pontua' || tabId === 'reports' || tabId === 'tv') return true;
+    if (tabId === 'users') return Boolean(user.permissions?.canManageUsers);
+    if (tabId === 'settings') return Boolean(user.permissions?.canManageCompany);
+    return false;
+  }
+  if (user.role === 'employee') {
+    return tabId === 'dashboard' || tabId === 'pontua' || tabId === 'reports';
+  }
+  return false;
+};
+
+
