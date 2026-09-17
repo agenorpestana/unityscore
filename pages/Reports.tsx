@@ -225,7 +225,9 @@ export const Reports: React.FC = () => {
   const [isOpaModalOpen, setIsOpaModalOpen] = useState(false);
   const [opaTargetOs, setOpaTargetOs] = useState<SubjectReportRow | null>(null);
   const [opaTemplatesList, setOpaTemplatesList] = useState<OpaTemplate[]>([]);
+  const [isLoadingOpaTemplates, setIsLoadingOpaTemplates] = useState<boolean>(false);
   const [selectedOpaTemplateId, setSelectedOpaTemplateId] = useState<string>('');
+  const [templateVariables, setTemplateVariables] = useState<Record<string, string>>({});
   const [opaChannelsList, setOpaChannelsList] = useState<OpaChannel[]>([]);
   const [isLoadingOpaChannels, setIsLoadingOpaChannels] = useState<boolean>(false);
   const [opaCanalId, setOpaCanalId] = useState<string>('');
@@ -435,20 +437,68 @@ export const Reports: React.FC = () => {
   };
 
   const fetchOpaTemplatesList = async (companyId?: string) => {
+      setIsLoadingOpaTemplates(true);
       try {
           const config = getApiConfig();
           const cid = companyId || config?.id;
-          if (!cid) return;
+          if (!cid) return [];
           const res = await fetch(`/api/opasuite/templates?companyId=${cid}`);
           if (res.ok) {
               const data = await res.json();
-              const list = Array.isArray(data) ? data : (data.data || data.registros || []);
+              const list: OpaTemplate[] = Array.isArray(data) ? data : (data.data || data.registros || []);
               setOpaTemplatesList(list);
+              if (list.length > 0 && !selectedOpaTemplateId) {
+                  setSelectedOpaTemplateId(list[0]._id);
+              }
+              return list;
           }
       } catch (e) {
           console.warn("Erro ao carregar templates do Opa! Suite:", e);
+      } finally {
+          setIsLoadingOpaTemplates(false);
       }
+      return [];
   };
+
+  const selectedOpaTemplate = useMemo(() => {
+      return opaTemplatesList.find(t => t._id === selectedOpaTemplateId) || null;
+  }, [opaTemplatesList, selectedOpaTemplateId]);
+
+  const detectedOpaVariables = useMemo(() => {
+      if (!selectedOpaTemplate?.texto) return [];
+      const matches = selectedOpaTemplate.texto.match(/\{\{([^}]+)\}\}/g);
+      if (!matches) return [];
+      return Array.from(new Set(matches.map(m => m.replace(/[{}]/g, '').trim())));
+  }, [selectedOpaTemplate]);
+
+  useEffect(() => {
+      if (detectedOpaVariables.length > 0) {
+          const initial: Record<string, string> = {};
+          detectedOpaVariables.forEach((v) => {
+              const lower = v.toLowerCase();
+              if (lower.includes('nome') || lower.includes('user') || lower.includes('cliente') || v === '1') {
+                  initial[v] = opaClientName || 'Cliente';
+              } else if (lower.includes('protocolo') || lower.includes('os') || lower.includes('ordem') || v === '2') {
+                  initial[v] = opaTargetOs?.osId || '';
+              } else {
+                  initial[v] = '';
+              }
+          });
+          setTemplateVariables(initial);
+      } else {
+          setTemplateVariables({});
+      }
+  }, [selectedOpaTemplateId, opaTargetOs, opaClientName, detectedOpaVariables]);
+
+  const renderedOpaMessage = useMemo(() => {
+      if (!selectedOpaTemplate?.texto) return '';
+      let msg = selectedOpaTemplate.texto;
+      detectedOpaVariables.forEach(v => {
+          const val = templateVariables[v] !== undefined && templateVariables[v] !== '' ? templateVariables[v] : `{{${v}}}`;
+          msg = msg.split(`{{${v}}}`).join(val);
+      });
+      return msg;
+  }, [selectedOpaTemplate, detectedOpaVariables, templateVariables]);
 
   const fetchOpaChannelsList = async (companyId?: string) => {
       setIsLoadingOpaChannels(true);
@@ -635,17 +685,24 @@ export const Reports: React.FC = () => {
       try {
           const rawDigits = opaClientPhone.replace(/\D/g, '');
           const phoneWithCountry = rawDigits.startsWith('55') ? rawDigits : `55${rawDigits}`;
+          const canalCliente = `+${phoneWithCountry}`;
+
+          // Formata variáveis se o template exigir
+          const templateVarsArray = detectedOpaVariables.length > 0 
+              ? detectedOpaVariables.map(v => templateVariables[v] !== undefined ? templateVariables[v] : '')
+              : [];
 
           const payload = {
               companyId: config.id,
               canal: opaCanalId || undefined,
               contato: {
+                  canalCliente: canalCliente,
                   nome: opaClientName || (opaTargetOs ? `Cliente #${opaTargetOs.clientId}` : 'Cliente'),
-                  telefone: phoneWithCountry,
                   cpf_cnpj: opaClientCpf || undefined
               },
               template: {
-                  _id: selectedOpaTemplateId
+                  _id: selectedOpaTemplateId,
+                  ...(templateVarsArray.length > 0 ? { variaveis: templateVarsArray } : {})
               },
               allowSendingToStartedCustomerService: true
           };
@@ -663,7 +720,7 @@ export const Reports: React.FC = () => {
           if (res.ok && (data.success || data.protocolo || data._id || data.id || !data.error)) {
               setOpaToast({
                   success: true,
-                  text: 'Solicitação e template enviados com sucesso ao Opa! Suite!'
+                  text: 'Solicitação e template enviados com sucesso ao WhatsApp do cliente!'
               });
               setTimeout(() => {
                   setIsOpaModalOpen(false);
@@ -671,7 +728,7 @@ export const Reports: React.FC = () => {
           } else {
               setOpaToast({
                   success: false,
-                  text: `Erro ao enviar: ${data.error || 'Verifique se a integração e canal estão ativos no Opa! Suite.'}`
+                  text: `Erro ao enviar: ${data.error || data.message || 'Verifique se o canal WhatsApp e o template estão ativos no Opa! Suite.'}`
               });
           }
       } catch (e: any) {
@@ -3574,45 +3631,84 @@ export const Reports: React.FC = () => {
                   </div>
 
                   {/* Escolha do Template */}
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex justify-between items-center">
-                      <span>Template de Mensagem do Opa! Suite</span>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
+                        <span>Template de Mensagem (Opa! Suite)</span>
+                        {isLoadingOpaTemplates && (
+                          <span className="text-[11px] text-brand-600 flex items-center gap-1 font-normal">
+                            <Loader2 size={12} className="animate-spin" /> Carregando...
+                          </span>
+                        )}
+                      </label>
                       <button
                         type="button"
                         onClick={() => {
                           const config = getApiConfig();
                           if (config) fetchOpaTemplatesList(config.id);
                         }}
-                        className="text-[11px] text-brand-600 hover:text-brand-800 flex items-center gap-1 font-normal"
+                        disabled={isLoadingOpaTemplates}
+                        className="text-[11px] text-brand-600 hover:text-brand-800 flex items-center gap-1 font-medium disabled:opacity-50"
                       >
-                        <RefreshCw size={11} /> Atualizar Lista
+                        <RefreshCw size={11} className={isLoadingOpaTemplates ? "animate-spin" : ""} /> Atualizar Lista
                       </button>
-                    </label>
+                    </div>
+
                     <select
                       value={selectedOpaTemplateId}
                       onChange={e => setSelectedOpaTemplateId(e.target.value)}
-                      className="w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:ring-brand-500 focus:border-brand-500 bg-white"
+                      disabled={isLoadingOpaTemplates}
+                      className="w-full rounded-lg border-gray-300 border p-2.5 text-xs focus:ring-brand-500 focus:border-brand-500 bg-white"
                     >
                       <option value="">Selecione um template cadastrado...</option>
                       {opaTemplatesList.map(t => (
                         <option key={t._id} value={t._id}>
-                          {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto?.substring(0, 60)}...
+                          {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto ? (t.texto.length > 70 ? t.texto.substring(0, 70) + '...' : t.texto) : (t.nome || t._id)}
                         </option>
                       ))}
                     </select>
-                    {opaTemplatesList.length === 0 && (
-                      <p className="text-[11px] text-amber-600 mt-1">
-                        Nenhum template encontrado. Verifique se a URL e Token do Opa! Suite estão configurados na aba Configurações da Empresa.
+
+                    {opaTemplatesList.length === 0 && !isLoadingOpaTemplates && (
+                      <p className="text-[11px] text-amber-600 bg-amber-50 p-2 rounded border border-amber-200">
+                        Nenhum template retornado. Verifique a URL e Token nas Configurações da Empresa ou clique em "Atualizar Lista".
                       </p>
                     )}
                   </div>
 
-                  {/* Pré-visualização do texto do Template */}
+                  {/* Variáveis Dinâmicas do Template (se houver) */}
+                  {selectedOpaTemplateId && detectedOpaVariables.length > 0 && (
+                    <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-900">Variáveis do Template (WhatsApp)</span>
+                        <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-mono">
+                          {detectedOpaVariables.length} campo(s)
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {detectedOpaVariables.map((v) => (
+                          <div key={v}>
+                            <label className="block text-[11px] font-semibold text-amber-800 mb-0.5 font-mono">
+                              {"{{" + v + "}}"}
+                            </label>
+                            <input
+                              type="text"
+                              value={templateVariables[v] || ''}
+                              onChange={e => setTemplateVariables(prev => ({ ...prev, [v]: e.target.value }))}
+                              placeholder={`Valor para {{${v}}}`}
+                              className="w-full rounded border-amber-300 border p-1.5 text-xs bg-white text-gray-800"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pré-visualização do texto do Template com variáveis substituídas */}
                   {selectedOpaTemplateId && (
                     <div>
-                      <span className="block text-[11px] font-semibold text-gray-500 mb-1">Pré-visualização da Mensagem:</span>
-                      <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg text-xs text-emerald-950 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto">
-                        {opaTemplatesList.find(t => t._id === selectedOpaTemplateId)?.texto || 'Sem conteúdo'}
+                      <span className="block text-[11px] font-semibold text-gray-500 mb-1">Pré-visualização da Mensagem (WhatsApp):</span>
+                      <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg text-xs text-emerald-950 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto font-sans">
+                        {renderedOpaMessage || 'Sem conteúdo'}
                       </div>
                     </div>
                   )}

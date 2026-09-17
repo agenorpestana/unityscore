@@ -123,9 +123,12 @@ export const CompanySettings: React.FC = () => {
     setTestingOpa(true);
     setOpaTestStatus(null);
     try {
+      const directUrlParam = company.opaSuiteUrl ? `&directUrl=${encodeURIComponent(company.opaSuiteUrl)}` : '';
+      const directTokenParam = company.opaSuiteToken ? `&directToken=${encodeURIComponent(company.opaSuiteToken)}` : '';
+
       const [resTemplates, resCanais] = await Promise.all([
-        fetch(`/api/opasuite/templates?companyId=${company.id}`),
-        fetch(`/api/opasuite/canais?companyId=${company.id}&canal=Whatsapp`)
+        fetch(`/api/opasuite/templates?companyId=${company.id}${directUrlParam}${directTokenParam}`),
+        fetch(`/api/opasuite/canais?companyId=${company.id}&canal=Whatsapp${directUrlParam}${directTokenParam}`)
       ]);
 
       let templateCount = 0;
@@ -136,6 +139,9 @@ export const CompanySettings: React.FC = () => {
         const templates = Array.isArray(data) ? data : (data.data || data.registros || []);
         setOpaTemplates(templates);
         templateCount = templates.length;
+        if (templates.length > 0 && !company.opaSuiteDefaultTemplateId) {
+          setCompany(prev => ({ ...prev, opaSuiteDefaultTemplateId: templates[0]._id }));
+        }
       }
 
       if (resCanais.ok) {

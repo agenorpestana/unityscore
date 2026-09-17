@@ -568,11 +568,55 @@ const handleOpaClientes = async (req, res) => {
 app.get('/api/opasuite/clientes', handleOpaClientes);
 app.post('/api/opasuite/clientes', handleOpaClientes);
 
-// Listar Templates no Opa! Suite (suporta GET e POST)
+// Função utilitária para chamadas HTTP/HTTPS ao Opa! Suite (suporta GET com body)
+const requestOpaSuite = (targetUrl, method = 'GET', bodyData = null, token) => {
+    return new Promise((resolve, reject) => {
+        try {
+            const parsedUrl = new URL(targetUrl);
+            const protocol = parsedUrl.protocol === 'http:' ? http : https;
+            const bodyBuffer = bodyData ? Buffer.from(typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData)) : null;
+
+            const reqOptions = {
+                hostname: parsedUrl.hostname,
+                port: parsedUrl.port || (parsedUrl.protocol === 'http:' ? 80 : 443),
+                path: parsedUrl.pathname + parsedUrl.search,
+                method: method || 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json',
+                    ...(bodyBuffer ? {
+                        'Content-Type': 'application/json',
+                        'Content-Length': bodyBuffer.length
+                    } : {})
+                }
+            };
+
+            const req = protocol.request(reqOptions, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    resolve({ status: res.statusCode || 200, data });
+                });
+            });
+
+            req.on('error', (err) => reject(err));
+            if (bodyBuffer) {
+                req.write(bodyBuffer);
+            }
+            req.end();
+        } catch (err) {
+            reject(err);
+        }
+    });
+};
+
+// Listar Templates no Opa! Suite (suporta GET e POST com body json)
 const handleOpaTemplates = async (req, res) => {
     const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
     const directUrl = req.body?.directUrl || req.query.directUrl;
     const directToken = req.body?.directToken || req.query.directToken;
+    const customFilter = req.body?.filter;
+    const customOptions = req.body?.options || { limit: 200 };
 
     try {
         const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
@@ -580,24 +624,81 @@ const handleOpaTemplates = async (req, res) => {
             return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
         }
 
-        const targetUrl = `${config.url}/api/v1/template`;
-        console.log(`Opa! Suite Buscando templates em: ${targetUrl}`);
+        const baseUrl = config.url.replace(/\/+$/, '');
+        const requestBody = {
+            filter: customFilter || {},
+            options: customOptions
+        };
 
-        const response = await fetch(targetUrl, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${config.token}`,
-                'Accept': 'application/json'
-            }
-        });
+        console.log(`Opa! Suite Buscando templates em: ${baseUrl}/api/v1/template`);
 
-        const textData = await response.text();
+        // 1. Tenta GET com body em /api/v1/template conforme doc do Opa! Suite
+        let response = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'GET', requestBody, config.token);
+        let parsed = null;
         try {
-            const data = JSON.parse(textData);
-            res.status(response.status).json(data);
-        } catch {
-            res.status(response.status).send(textData);
+            parsed = JSON.parse(response.data);
+        } catch {}
+
+        let templates = [];
+        if (parsed && Array.isArray(parsed.data)) {
+            templates = parsed.data;
+        } else if (parsed && Array.isArray(parsed)) {
+            templates = parsed;
+        } else if (parsed && Array.isArray(parsed.registros)) {
+            templates = parsed.registros;
         }
+
+        // 2. Se vazio ou erro, tenta /api/v1/template/ (com barra final)
+        if (templates.length === 0) {
+            try {
+                const retrySlash = await requestOpaSuite(`${baseUrl}/api/v1/template/`, 'GET', requestBody, config.token);
+                const slashParsed = JSON.parse(retrySlash.data);
+                const slashList = Array.isArray(slashParsed?.data) ? slashParsed.data : (Array.isArray(slashParsed) ? slashParsed : (Array.isArray(slashParsed?.registros) ? slashParsed.registros : []));
+                if (slashList.length > 0) {
+                    templates = slashList;
+                    parsed = slashParsed;
+                    console.log(`Opa! Suite: Encontrados ${templates.length} templates com barra final.`);
+                }
+            } catch (errSlash) {
+                console.warn('Opa! Suite fallback /template/:', errSlash.message);
+            }
+        }
+
+        // 3. Se ainda vazio, tenta GET apenas com options limit
+        if (templates.length === 0) {
+            try {
+                const retrySimple = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'GET', { options: { limit: 200 } }, config.token);
+                const simpleParsed = JSON.parse(retrySimple.data);
+                const simpleList = Array.isArray(simpleParsed?.data) ? simpleParsed.data : (Array.isArray(simpleParsed) ? simpleParsed : []);
+                if (simpleList.length > 0) {
+                    templates = simpleList;
+                    parsed = simpleParsed;
+                    console.log(`Opa! Suite: Encontrados ${templates.length} templates sem filter.`);
+                }
+            } catch (errSimple) {}
+        }
+
+        // 4. Se ainda vazio, tenta POST (alguns ambientes convertem GET com body para POST)
+        if (templates.length === 0) {
+            try {
+                const retryPost = await requestOpaSuite(`${baseUrl}/api/v1/template`, 'POST', requestBody, config.token);
+                const postParsed = JSON.parse(retryPost.data);
+                const postList = Array.isArray(postParsed?.data) ? postParsed.data : (Array.isArray(postParsed) ? postParsed : []);
+                if (postList.length > 0) {
+                    templates = postList;
+                    parsed = postParsed;
+                    console.log(`Opa! Suite: Encontrados ${templates.length} templates via POST.`);
+                }
+            } catch (errPost) {}
+        }
+
+        console.log(`Opa! Suite: ${templates.length} templates encontrados com sucesso.`);
+
+        return res.status(200).json({
+            status: 'success',
+            code: 200,
+            data: templates
+        });
     } catch (e) {
         console.error('Erro Opa! Suite Templates:', e);
         res.status(500).json({ error: 'Erro ao listar templates Opa! Suite: ' + e.message });
@@ -622,7 +723,8 @@ const handleOpaCanais = async (req, res) => {
             return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
         }
 
-        const targetUrl = `${config.url}/api/v1/canal-comunicacao/`;
+        const baseUrl = config.url.replace(/\/+$/, '');
+        const targetUrl = `${baseUrl}/api/v1/canal-comunicacao/`;
         console.log(`Opa! Suite Buscando canais em: ${targetUrl} com canal: ${requestedCanal}`);
 
         const filterPayload = customFilter ? customFilter : (requestedCanal && requestedCanal !== 'all' ? { canal: requestedCanal } : {});
@@ -631,50 +733,8 @@ const handleOpaCanais = async (req, res) => {
             options: customOptions
         };
 
-        // Função de envio com Node http/https para suportar GET com body conforme a API do Opa! Suite
-        const fetchOpaChannelApi = (method, bodyData) => {
-            return new Promise((resolve, reject) => {
-                try {
-                    const parsedUrl = new URL(targetUrl);
-                    const protocol = parsedUrl.protocol === 'http:' ? http : https;
-                    const bodyBuffer = bodyData ? Buffer.from(typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData)) : null;
-
-                    const reqOptions = {
-                        hostname: parsedUrl.hostname,
-                        port: parsedUrl.port || (parsedUrl.protocol === 'http:' ? 80 : 443),
-                        path: parsedUrl.pathname + parsedUrl.search,
-                        method: method || 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${config.token}`,
-                            'Accept': 'application/json',
-                            ...(bodyBuffer ? {
-                                'Content-Type': 'application/json',
-                                'Content-Length': bodyBuffer.length
-                            } : {})
-                        }
-                    };
-
-                    const opaReq = protocol.request(reqOptions, (opaRes) => {
-                        let data = '';
-                        opaRes.on('data', chunk => data += chunk);
-                        opaRes.on('end', () => {
-                            resolve({ status: opaRes.statusCode || 200, data });
-                        });
-                    });
-
-                    opaReq.on('error', (err) => reject(err));
-                    if (bodyBuffer) {
-                        opaReq.write(bodyBuffer);
-                    }
-                    opaReq.end();
-                } catch (err) {
-                    reject(err);
-                }
-            });
-        };
-
         // 1. Tenta GET com body
-        let response = await fetchOpaChannelApi('GET', requestBody);
+        let response = await requestOpaSuite(targetUrl, 'GET', requestBody, config.token);
         let parsed = null;
         try {
             parsed = JSON.parse(response.data);
@@ -692,7 +752,7 @@ const handleOpaCanais = async (req, res) => {
         // 2. Se não encontrou canais com o filtro específico, tenta sem filtro para buscar todos
         if (channels.length === 0) {
             try {
-                const fallbackRes = await fetchOpaChannelApi('GET', { options: { limit: 100 } });
+                const fallbackRes = await requestOpaSuite(targetUrl, 'GET', { options: { limit: 100 } }, config.token);
                 const fallbackParsed = JSON.parse(fallbackRes.data);
                 const allList = Array.isArray(fallbackParsed?.data) ? fallbackParsed.data : (Array.isArray(fallbackParsed) ? fallbackParsed : []);
                 if (allList.length > 0) {
@@ -750,31 +810,37 @@ app.post('/api/opasuite/send-template', async (req, res) => {
             return res.status(400).json({ error: 'ID do Canal de comunicação não informado.' });
         }
 
-        const targetUrl = `${config.url}/api/v1/template/send`;
+        const baseUrl = config.url.replace(/\/+$/, '');
+        const targetUrl = `${baseUrl}/api/v1/template/send`;
         console.log(`Opa! Suite Enviando template para: ${targetUrl}`);
 
+        // Formata o número do contato estritamente como a API do Opa! Suite exige: +55...
+        let phoneFormatted = (contato?.canalCliente || contato?.telefone || '').toString().trim();
+        const rawDigits = phoneFormatted.replace(/\D/g, '');
+        const withDdi = rawDigits.startsWith('55') ? rawDigits : `55${rawDigits}`;
+        const canalCliente = `+${withDdi}`;
+
         const payload = {
-            contato: contato || {},
-            template: template || {},
+            contato: {
+                canalCliente: canalCliente,
+                ...(contato?.nome ? { nome: contato.nome } : {})
+            },
+            template: {
+                _id: template._id || template.id,
+                ...(Array.isArray(template.variaveis) ? { variaveis: template.variaveis } : {}),
+                ...(template.midiaAlternativa ? { midiaAlternativa: template.midiaAlternativa } : {})
+            },
             canal: channelToSend,
-            allowSendingToStartedCustomerService: allowSendingToStartedCustomerService !== undefined ? allowSendingToStartedCustomerService : true
+            allowSendingToStartedCustomerService: allowSendingToStartedCustomerService !== undefined ? Boolean(allowSendingToStartedCustomerService) : true
         };
 
-        const response = await fetch(targetUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${config.token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
-
-        const textData = await response.text();
+        const response = await requestOpaSuite(targetUrl, 'POST', payload, config.token);
+        let parsed = null;
         try {
-            const data = JSON.parse(textData);
-            res.status(response.status).json(data);
+            parsed = JSON.parse(response.data);
+            return res.status(response.status || 200).json(parsed);
         } catch {
-            res.status(response.status).send(textData);
+            return res.status(response.status || 200).send(response.data);
         }
     } catch (e) {
         console.error('Erro Opa! Suite Enviar Template:', e);
