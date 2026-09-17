@@ -17,6 +17,7 @@ export interface User {
   active: boolean;
   companyId?: string; // Link to tenant
   ixcEmployeeId?: string; // Link to IXC Employee ID
+  opaUserId?: string; // Link to Opa! Suite Atendente/User ID
 }
 
 export interface Company {
@@ -57,6 +58,14 @@ export interface OpaChannel {
   canal?: string;
   integracao?: string;
   prioridadeListagemAtendimentos?: number;
+}
+
+export interface OpaUser {
+  _id: string;
+  nome: string;
+  status?: string; // 'A' para ativo, 'I' para inativo
+  tipo?: string; // 'user' ou 'bot'
+  email?: string;
 }
 
 // Novos tipos para o SaaS Admin

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2, HardHat, CheckSquare, Square, CheckCircle2 } from 'lucide-react';
-import { User, Permission, Company, SYSTEM_TABS, isTabAllowed } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Edit2, Trash2, Check, X, Shield, User as UserIcon, Loader2, HardHat, CheckSquare, Square, CheckCircle2, MessageSquare, RefreshCw } from 'lucide-react';
+import { User, Permission, Company, SYSTEM_TABS, isTabAllowed, OpaUser } from '../types';
 
 interface IXCEmployee {
     id: string;
@@ -19,6 +19,10 @@ export const UserManagement: React.FC = () => {
   const [ixcEmployees, setIxcEmployees] = useState<IXCEmployee[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
 
+  // Opa! Suite Users Data
+  const [opaUsers, setOpaUsers] = useState<OpaUser[]>([]);
+  const [loadingOpaUsers, setLoadingOpaUsers] = useState(false);
+
   // Form State
   const [formData, setFormData] = useState<Partial<User>>({
     name: '',
@@ -33,7 +37,8 @@ export const UserManagement: React.FC = () => {
     },
     active: true,
     role: 'user',
-    ixcEmployeeId: ''
+    ixcEmployeeId: '',
+    opaUserId: ''
   });
 
   useEffect(() => {
@@ -44,6 +49,7 @@ export const UserManagement: React.FC = () => {
         if (company.id) {
             setCurrentCompanyId(company.id);
             fetchUsers(company.id);
+            fetchOpaUsers(company.id);
         }
     }
   }, []);
@@ -62,6 +68,33 @@ export const UserManagement: React.FC = () => {
           setIsLoading(false);
       }
   };
+
+  const fetchOpaUsers = async (companyId?: string) => {
+    const targetCompanyId = companyId || currentCompanyId;
+    if (!targetCompanyId) return;
+
+    setLoadingOpaUsers(true);
+    try {
+      const res = await fetch(`/api/opasuite/usuarios?companyId=${targetCompanyId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.data && Array.isArray(data.data) ? data.data : []);
+        setOpaUsers(list);
+      }
+    } catch (e) {
+      console.warn("Erro ao buscar usuários do Opa! Suite:", e);
+    } finally {
+      setLoadingOpaUsers(false);
+    }
+  };
+
+  const opaUsersMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    opaUsers.forEach(u => {
+      if (u._id) map[u._id] = u.nome;
+    });
+    return map;
+  }, [opaUsers]);
 
   const fetchIXCEmployees = async () => {
     if (ixcEmployees.length > 0) return; // Já carregou
@@ -105,6 +138,7 @@ export const UserManagement: React.FC = () => {
 
   const handleOpenModal = (user?: User) => {
     fetchIXCEmployees(); // Carrega funcionários em background
+    fetchOpaUsers(); // Carrega atendentes do Opa! Suite em background
 
     if (user) {
       setEditingUser(user);
@@ -117,6 +151,7 @@ export const UserManagement: React.FC = () => {
           ...user, 
           password: '',
           ixcEmployeeId: user.ixcEmployeeId || '',
+          opaUserId: user.opaUserId || '',
           permissions: {
             canManageCompany: Boolean(user.permissions?.canManageCompany),
             canManageUsers: Boolean(user.permissions?.canManageUsers),
@@ -140,7 +175,8 @@ export const UserManagement: React.FC = () => {
         },
         active: true,
         role: 'user',
-        ixcEmployeeId: ''
+        ixcEmployeeId: '',
+        opaUserId: ''
       });
     }
     setIsModalOpen(true);
@@ -327,6 +363,13 @@ export const UserManagement: React.FC = () => {
                     <div>
                       <p className="font-medium text-gray-900">{user.name}</p>
                       <p className="text-sm text-gray-500">{user.email}</p>
+                      {user.opaUserId && (
+                        <div className="mt-1">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            <MessageSquare size={11} /> Opa: {opaUsersMap[user.opaUserId] || 'Atendente Vinculado'}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </td>
@@ -492,6 +535,46 @@ export const UserManagement: React.FC = () => {
                     placeholder={editingUser ? '••••••••' : 'Defina a senha'}
                     className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
                   />
+                </div>
+
+                {/* Vínculo Opa! Suite (Atendente WhatsApp) */}
+                <div className="bg-emerald-50/60 p-4 rounded-lg border border-emerald-200">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-sm font-bold text-emerald-900 flex items-center gap-2">
+                      <MessageSquare size={16} className="text-emerald-600" /> Atendente Opa! Suite (WhatsApp)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => fetchOpaUsers()}
+                      disabled={loadingOpaUsers}
+                      title="Atualizar lista de atendentes do Opa! Suite"
+                      className="text-xs text-emerald-700 hover:text-emerald-800 flex items-center gap-1 font-medium px-2 py-0.5 rounded bg-emerald-100/70 hover:bg-emerald-100 transition-colors"
+                    >
+                      <RefreshCw size={12} className={loadingOpaUsers ? 'animate-spin' : ''} />
+                      {loadingOpaUsers ? 'Atualizando...' : 'Recarregar'}
+                    </button>
+                  </div>
+                  {loadingOpaUsers ? (
+                    <div className="flex items-center gap-2 text-sm text-emerald-700 py-2">
+                      <Loader2 className="animate-spin" size={14} /> Carregando lista de atendentes...
+                    </div>
+                  ) : (
+                    <select
+                      value={formData.opaUserId || ''}
+                      onChange={e => setFormData({ ...formData, opaUserId: e.target.value })}
+                      className="block w-full rounded-lg border-emerald-300 border p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 bg-white"
+                    >
+                      <option value="">Nenhum atendente vinculado</option>
+                      {opaUsers.map(u => (
+                        <option key={u._id} value={u._id}>
+                          {u.nome} {u.tipo ? `(${u.tipo === 'user' ? 'Usuário' : u.tipo})` : ''} {u.status === 'A' ? '• Ativo' : '• Inativo'}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="text-xs text-emerald-700 mt-2">
+                    Vincula este usuário ao seu atendente no Opa! Suite para disparo de notificações e templates no WhatsApp.
+                  </p>
                 </div>
 
                 {/* Seção 1: Controle Granular de Abas do Sistema */}

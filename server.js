@@ -93,6 +93,7 @@ async function initDatabase() {
         await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
         
         await addColumnSafe('users', 'ixc_employee_id VARCHAR(50) DEFAULT NULL');
+        await addColumnSafe('users', 'opa_user_id VARCHAR(100) DEFAULT NULL');
         try {
             await connection.query(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
         } catch (e) {}
@@ -255,33 +256,34 @@ app.get('/api/users', async (req, res) => {
     const companyId = req.query.companyId;
     if (!companyId) return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id FROM users WHERE company_id = ?', [companyId]);
+        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id, opa_user_id FROM users WHERE company_id = ?', [companyId]);
         const users = rows.map(u => ({
             ...u,
             permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
             active: !!u.active,
-            ixcEmployeeId: u.ixc_employee_id 
+            ixcEmployeeId: u.ixc_employee_id,
+            opaUserId: u.opa_user_id || null
         }));
         res.json(users);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/users', async (req, res) => {
-    const { companyId, name, email, password, role, permissions, active, ixcEmployeeId } = req.body;
+    const { companyId, name, email, password, role, permissions, active, ixcEmployeeId, opaUserId } = req.body;
     try {
         const [result] = await pool.query(
-            'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null]
+            'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null]
         );
         res.json({ success: true, id: result.insertId });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/users/:id', async (req, res) => {
-    const { name, email, password, permissions, active, role, ixcEmployeeId } = req.body;
+    const { name, email, password, permissions, active, role, ixcEmployeeId, opaUserId } = req.body;
     try {
-        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?';
-        let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null];
+        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
+        let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
         if (password && password.trim() !== '') {
             query += ', password=?';
             params.push(password);
@@ -879,10 +881,75 @@ const handleOpaCanais = async (req, res) => {
 app.get('/api/opasuite/canais', handleOpaCanais);
 app.post('/api/opasuite/canais', handleOpaCanais);
 
+// Listar Usuários do Opa! Suite (Atendentes)
+const handleOpaUsuarios = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.query.companyId || req.body.companyId;
+    const { directUrl, directToken, filter, options, status, tipo, nome } = { ...req.query, ...req.body };
+    try {
+        const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
+        if (!config) {
+            return res.status(400).json({ error: 'Integração Opa! Suite não configurada. Preencha URL e Token em Configurações.' });
+        }
+
+        const baseUrl = config.url.replace(/\/+$/, '');
+        let targetUrl = `${baseUrl}/api/v1/usuario/`;
+
+        const requestFilter = {
+            ...(filter && typeof filter === 'object' ? filter : {}),
+            ...(status ? { status } : {}),
+            ...(tipo ? { tipo } : {}),
+            ...(nome ? { nome } : {})
+        };
+
+        // Por padrão busca usuários ativos se nada foi filtrado
+        if (Object.keys(requestFilter).length === 0) {
+            requestFilter.status = 'A';
+        }
+
+        const requestOptions = {
+            limit: 200,
+            ...(options && typeof options === 'object' ? options : {})
+        };
+
+        const payload = {
+            filter: requestFilter,
+            options: requestOptions
+        };
+
+        console.log(`Opa! Suite Listando usuários: ${targetUrl}`, JSON.stringify(payload));
+        let response = await requestOpaSuite(targetUrl, 'GET', payload, config.token);
+
+        // Se falhar com 404, tenta sem a barra final
+        if (response.status === 404) {
+            targetUrl = `${baseUrl}/api/v1/usuario`;
+            response = await requestOpaSuite(targetUrl, 'GET', payload, config.token);
+        }
+
+        let parsed = null;
+        try {
+            parsed = JSON.parse(response.data);
+        } catch (err) {
+            console.warn('Opa! Suite resposta de usuários não é JSON estrito:', response.data);
+        }
+
+        if (parsed) {
+            return res.status(response.status || 200).json(parsed);
+        } else {
+            return res.status(response.status || 200).send(response.data);
+        }
+    } catch (e) {
+        console.error('Erro Opa! Suite Usuários:', e);
+        res.status(500).json({ error: 'Erro ao listar usuários do Opa! Suite: ' + e.message });
+    }
+};
+
+app.get('/api/opasuite/usuarios', handleOpaUsuarios);
+app.post('/api/opasuite/usuarios', handleOpaUsuarios);
+
 // Enviar Template no Opa! Suite
 app.post('/api/opasuite/send-template', async (req, res) => {
     const companyId = req.headers['x-company-id'] || req.body.companyId;
-    const { directUrl, directToken, contato, template, canal, departamento, allowSendingToStartedCustomerService } = req.body;
+    const { directUrl, directToken, contato, template, canal, departamento, atendente, atendenteId, id_atendente, opaUserId, allowSendingToStartedCustomerService } = req.body;
     try {
         const config = await getOpaSuiteConfig(companyId, directUrl, directToken);
         if (!config) {
@@ -895,10 +962,11 @@ app.post('/api/opasuite/send-template', async (req, res) => {
         }
 
         const departmentToSend = departamento || config.departmentId;
+        const attendantToSend = atendente || atendenteId || id_atendente || opaUserId;
 
         const baseUrl = config.url.replace(/\/+$/, '');
         const targetUrl = `${baseUrl}/api/v1/template/send`;
-        console.log(`Opa! Suite Enviando template para: ${targetUrl} (canal: ${channelToSend}, depto: ${departmentToSend || 'nenhum'})`);
+        console.log(`Opa! Suite Enviando template para: ${targetUrl} (canal: ${channelToSend}, depto: ${departmentToSend || 'nenhum'}, atendente: ${attendantToSend || 'nenhum'})`);
 
         // Formata o número do contato estritamente como a API do Opa! Suite exige: +55...
         let phoneFormatted = (contato?.canalCliente || contato?.telefone || '').toString().trim();
@@ -918,6 +986,7 @@ app.post('/api/opasuite/send-template', async (req, res) => {
             },
             canal: channelToSend,
             ...(departmentToSend ? { departamento: departmentToSend } : {}),
+            ...(attendantToSend ? { id_atendente: attendantToSend, atendente: attendantToSend } : {}),
             allowSendingToStartedCustomerService: allowSendingToStartedCustomerService !== undefined ? Boolean(allowSendingToStartedCustomerService) : true
         };
 
@@ -960,7 +1029,8 @@ app.post('/api/login', async (req, res) => {
                     role: user.role,
                     permissions: typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions,
                     companyId: user.company_id ? user.company_id.toString() : null,
-                    ixcEmployeeId: user.ixc_employee_id ? user.ixc_employee_id.toString() : null
+                    ixcEmployeeId: user.ixc_employee_id ? user.ixc_employee_id.toString() : null,
+                    opaUserId: user.opa_user_id ? user.opa_user_id.toString() : null
                 },
                 company: companyData
             });

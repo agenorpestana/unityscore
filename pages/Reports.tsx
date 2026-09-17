@@ -48,7 +48,7 @@ import {
   PieChart,
   Pie
 } from 'recharts';
-import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel, OpaDepartment } from '../types';
+import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel, OpaDepartment, OpaUser } from '../types';
 
 interface ReportFilter {
   startDate: string;
@@ -234,6 +234,9 @@ export const Reports: React.FC = () => {
   const [opaDepartmentsList, setOpaDepartmentsList] = useState<OpaDepartment[]>([]);
   const [isLoadingOpaDepartments, setIsLoadingOpaDepartments] = useState<boolean>(false);
   const [opaDepartamentoId, setOpaDepartamentoId] = useState<string>('');
+  const [opaUsersList, setOpaUsersList] = useState<OpaUser[]>([]);
+  const [isLoadingOpaUsers, setIsLoadingOpaUsers] = useState<boolean>(false);
+  const [selectedOpaAttendantId, setSelectedOpaAttendantId] = useState<string>('');
   const [opaClientPhone, setOpaClientPhone] = useState<string>('');
   const [opaClientName, setOpaClientName] = useState<string>('');
   const [opaClientCpf, setOpaClientCpf] = useState<string>('');
@@ -568,6 +571,27 @@ export const Reports: React.FC = () => {
       return [];
   };
 
+  const fetchOpaUsersList = async (companyId?: string) => {
+      setIsLoadingOpaUsers(true);
+      try {
+          const config = getApiConfig();
+          const cid = companyId || config?.id;
+          if (!cid) return [];
+          const res = await fetch(`/api/opasuite/usuarios?companyId=${cid}`);
+          if (res.ok) {
+              const data = await res.json();
+              const list: OpaUser[] = Array.isArray(data) ? data : (data.data && Array.isArray(data.data) ? data.data : []);
+              setOpaUsersList(list);
+              return list;
+          }
+      } catch (e) {
+          console.warn("Erro ao buscar atendentes do Opa! Suite:", e);
+      } finally {
+          setIsLoadingOpaUsers(false);
+      }
+      return [];
+  };
+
   const handleOpenAssignModal = (osIds: string[]) => {
       setAssigningOsIds(osIds);
       if (osIds.length === 1) {
@@ -705,7 +729,15 @@ export const Reports: React.FC = () => {
       if (config) {
           fetchOpaChannelsList(config.id);
           fetchOpaDepartmentsList(config.id);
+          fetchOpaUsersList(config.id);
           fetchOpaTemplatesList(config.id, initialCanalId);
+      }
+
+      // Pré-selecionar atendente vinculado se o usuário logado tiver
+      if (currentUser?.opaUserId) {
+          setSelectedOpaAttendantId(currentUser.opaUserId);
+      } else {
+          setSelectedOpaAttendantId('');
       }
   };
 
@@ -739,6 +771,7 @@ export const Reports: React.FC = () => {
               companyId: config.id,
               canal: opaCanalId || undefined,
               departamento: opaDepartamentoId || undefined,
+              atendente: selectedOpaAttendantId || currentUser?.opaUserId || undefined,
               contato: {
                   canalCliente: canalCliente,
                   nome: opaClientName || (opaTargetOs ? `Cliente #${opaTargetOs.clientId}` : 'Cliente'),
@@ -3081,10 +3114,10 @@ export const Reports: React.FC = () => {
                 </div>
 
                 {/* Conteúdo da Tabela */}
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto border border-gray-200 rounded-lg">
                   <table className="report-table w-full text-left text-sm">
-                    {/* Colunas com larguras exatas para impressão e tela */}
-                    <colgroup>
+                    {/* Colunas com larguras exatas SOMENTE para impressão */}
+                    <colgroup className="print-only">
                       <col style={{ width: '7%' }} /> {/* ID OS */}
                       <col style={{ width: hideTechnician ? '23%' : '18%' }} /> {/* Cliente */}
                       <col style={{ width: hideTechnician ? '18%' : '14%' }} /> {/* Assunto */}
@@ -3117,16 +3150,16 @@ export const Reports: React.FC = () => {
                           </th>
                         )}
                         <th className="px-3 py-2.5 text-center w-20 report-nowrap">ID OS</th>
-                        <th className="px-3 py-2.5 min-w-[150px]">Cliente</th>
-                        <th className="px-3 py-2.5 min-w-[140px]">Assunto</th>
+                        <th className="px-3 py-2.5 min-w-[130px] max-w-[200px]">Cliente</th>
+                        <th className="px-3 py-2.5 min-w-[120px] max-w-[180px]">Assunto</th>
                         {!hideTechnician && (
-                          <th className="px-3 py-2.5 min-w-[140px]">Técnico Resp.</th>
+                          <th className="px-3 py-2.5 min-w-[110px] max-w-[160px]">Técnico Resp.</th>
                         )}
-                        <th className="px-3 py-2.5 min-w-[160px]">ID / Título Resposta</th>
-                        <th className="px-3 py-2.5 min-w-[180px]">Resposta</th>
-                        <th className="px-3 py-2.5 min-w-[110px] text-center report-nowrap">Data</th>
+                        <th className="px-3 py-2.5 min-w-[130px] max-w-[180px]">ID / Título Resposta</th>
+                        <th className="px-3 py-2.5 min-w-[140px] max-w-[220px]">Resposta</th>
+                        <th className="px-3 py-2.5 min-w-[100px] text-center report-nowrap">Data</th>
                         <th className="px-3 py-2.5 text-center w-20 report-nowrap">Status</th>
-                        <th className="px-3 py-2.5 text-center min-w-[210px] no-print">Ações</th>
+                        <th className="px-2.5 py-2.5 text-center min-w-[140px] sticky right-0 bg-gray-50 z-20 shadow-[-3px_0_6px_-2px_rgba(0,0,0,0.08)] border-l border-gray-200 no-print">Ações</th>
                       </tr>
                     </thead>
 
@@ -3139,7 +3172,7 @@ export const Reports: React.FC = () => {
                         const isSelected = selectedOsIds.has(row.osId);
 
                         return (
-                          <tr key={`screen-${row.osId}`} className={`transition-colors ${isSelected ? 'bg-brand-50/40' : 'hover:bg-gray-50'}`}>
+                          <tr key={`screen-${row.osId}`} className={`group transition-colors ${isSelected ? 'bg-brand-50/40' : 'hover:bg-gray-50'}`}>
                             {/* Checkbox de Seleção */}
                             {canAssignOS && (
                               <td className="px-2 py-2.5 text-center no-print">
@@ -3273,9 +3306,9 @@ export const Reports: React.FC = () => {
                               </span>
                             </td>
 
-                            {/* Coluna Ações */}
-                            <td className="px-3 py-2.5 text-center no-print whitespace-nowrap">
-                              <div className="flex items-center justify-center gap-1.5">
+                            {/* Coluna Ações (Responsiva e Fixa na borda direita) */}
+                            <td className="px-2 py-2 text-center no-print whitespace-nowrap sticky right-0 bg-white group-hover:bg-gray-50 z-10 shadow-[-3px_0_6px_-2px_rgba(0,0,0,0.08)] border-l border-gray-200">
+                              <div className="flex items-center justify-center gap-1">
                                 {/* Botão Atribuir Técnico/Funcionário (somente Adm ou Gestor com canAssignOS) */}
                                 {canAssignOS ? (
                                   <div className="inline-flex items-center">
@@ -3283,30 +3316,30 @@ export const Reports: React.FC = () => {
                                       type="button"
                                       onClick={() => handleOpenAssignModal([row.osId])}
                                       title={assignment ? `Atribuído para: ${assignment.assignedName}` : 'Atribuir esta OS para um técnico/funcionário'}
-                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors border shadow-2xs ${
+                                      className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition-colors border shadow-2xs ${
                                         assignment 
                                           ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100' 
                                           : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                                       }`}
                                     >
-                                      {assignment ? <UserCheck size={12} className="text-emerald-600" /> : <UserPlus size={12} className="text-slate-500" />}
-                                      <span>{assignment ? (assignment.assignedName?.split(' ')[0] || 'Atribuído') : 'Atribuir'}</span>
+                                      {assignment ? <UserCheck size={12} className="text-emerald-600 shrink-0" /> : <UserPlus size={12} className="text-slate-500 shrink-0" />}
+                                      <span className="truncate max-w-[65px]">{assignment ? (assignment.assignedName?.split(' ')[0] || 'Atribuído') : 'Atribuir'}</span>
                                     </button>
                                     {assignment && (
                                       <button
                                         type="button"
                                         onClick={() => handleUnassign(row.osId)}
                                         title="Remover atribuição desta OS"
-                                        className="ml-1 text-slate-400 hover:text-red-600 p-0.5 rounded transition-colors"
+                                        className="ml-0.5 text-slate-400 hover:text-red-600 p-0.5 rounded transition-colors"
                                       >
-                                        <X size={12} />
+                                        <X size={11} />
                                       </button>
                                     )}
                                   </div>
                                 ) : (
                                   assignment && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                      <UserCheck size={11} /> {assignment.assignedName?.split(' ')[0] || 'Atribuído'}
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 truncate max-w-[75px]">
+                                      <UserCheck size={11} className="shrink-0" /> {assignment.assignedName?.split(' ')[0] || 'Atribuído'}
                                     </span>
                                   )
                                 )}
@@ -3316,10 +3349,11 @@ export const Reports: React.FC = () => {
                                   type="button"
                                   onClick={() => handleOpenOpaModal(row)}
                                   title="Enviar Solicitação / Template para o cliente via Opa! Suite"
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors shadow-2xs"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors shadow-2xs shrink-0"
                                 >
-                                  <Send size={12} className="text-brand-600" />
-                                  <span>Enviar Solicitação</span>
+                                  <Send size={11} className="text-brand-600 shrink-0" />
+                                  <span>Enviar</span>
+                                  <span className="hidden xl:inline">Solicitação</span>
                                 </button>
                               </div>
                             </td>
@@ -3865,6 +3899,59 @@ export const Reports: React.FC = () => {
                         </div>
                       )}
                     </div>
+                  </div>
+
+                  {/* Atendente Opa! Suite (WhatsApp) */}
+                  <div className="bg-emerald-50/50 border border-emerald-200 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
+                        <UserCheck className="text-emerald-600" size={15} />
+                        <span>Atendente Opa! Suite (Vínculo WhatsApp)</span>
+                      </div>
+                      {selectedOpaAttendantId && (
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-medium border border-emerald-300">
+                          {currentUser?.opaUserId === selectedOpaAttendantId ? 'Seu Vínculo' : 'Atendente Definido'}
+                        </span>
+                      )}
+                    </div>
+
+                    {isLoadingOpaUsers ? (
+                      <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
+                        <Loader2 size={13} className="animate-spin text-emerald-600" />
+                        <span>Carregando atendentes...</span>
+                      </div>
+                    ) : opaUsersList.length > 0 ? (
+                      <div className="space-y-1">
+                        <select
+                          value={selectedOpaAttendantId}
+                          onChange={e => setSelectedOpaAttendantId(e.target.value)}
+                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
+                        >
+                          <option value="">Nenhum atendente selecionado</option>
+                          {opaUsersList.map(u => (
+                            <option key={u._id} value={u._id}>
+                              {u.nome} {u.tipo ? `(${u.tipo === 'user' ? 'Usuário' : u.tipo})` : ''} {u.status === 'A' ? '• Ativo' : '• Inativo'}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-[10px] text-emerald-700">
+                          O atendimento iniciado no WhatsApp será atribuído a este usuário no Opa! Suite.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <input
+                          type="text"
+                          placeholder="ID do Atendente Opa! Suite (opcional)"
+                          value={selectedOpaAttendantId}
+                          onChange={e => setSelectedOpaAttendantId(e.target.value)}
+                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
+                        />
+                        <p className="text-[10px] text-gray-500">
+                          Vincule o atendente no cadastro do usuário (Gerenciar Usuários) ou informe o ID.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {opaToast && (
