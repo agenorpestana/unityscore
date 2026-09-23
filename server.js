@@ -489,16 +489,29 @@ app.use('/api/ixc-proxy', async (req, res) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); 
 
-        const response = await fetch(targetUrl, {
-            method: 'POST', 
-            headers: {
-                'Authorization': `Basic ${tokenBase64}`,
-                'Content-Type': 'application/json',
-                'ixcsoft': 'listar'
-            },
-            body: JSON.stringify(req.body),
+        const requestMethod = req.method.toUpperCase();
+        const proxyHeaders = {
+            'Authorization': `Basic ${tokenBase64}`,
+            'Content-Type': 'application/json'
+        };
+
+        if (req.headers['ixcsoft']) {
+            proxyHeaders['ixcsoft'] = req.headers['ixcsoft'];
+        } else if (requestMethod === 'POST') {
+            proxyHeaders['ixcsoft'] = 'listar';
+        }
+
+        const fetchOptions = {
+            method: requestMethod,
+            headers: proxyHeaders,
             signal: controller.signal
-        }).finally(() => clearTimeout(timeoutId));
+        };
+
+        if (requestMethod !== 'GET' && requestMethod !== 'HEAD' && req.body && Object.keys(req.body).length > 0) {
+            fetchOptions.body = JSON.stringify(req.body);
+        }
+
+        const response = await fetch(targetUrl, fetchOptions).finally(() => clearTimeout(timeoutId));
 
         const data = await response.text();
         

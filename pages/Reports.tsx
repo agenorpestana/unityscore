@@ -34,7 +34,8 @@ import {
   ExternalLink,
   Layers,
   HardHat,
-  Lock
+  Lock,
+  Clock
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -251,6 +252,18 @@ export const Reports: React.FC = () => {
   const [whaticketToast, setWhaticketToast] = useState<{ success: boolean; text: string } | null>(null);
   const [showCompleted, setShowCompleted] = useState<boolean>(false);
   const [completingOsId, setCompletingOsId] = useState<string | null>(null);
+
+  // Finalização de O.S. no IXC via API
+  const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
+  const [finalizingOs, setFinalizingOs] = useState<SubjectReportRow | null>(null);
+  const [finalizeResponseId, setFinalizeResponseId] = useState<string>('');
+  const [finalizeResponseText, setFinalizeResponseText] = useState<string>('');
+  const [finalizeDateTime, setFinalizeDateTime] = useState<string>('');
+  const [finalizeTechnicianId, setFinalizeTechnicianId] = useState<string>('');
+  const [finalizeTechnicianName, setFinalizeTechnicianName] = useState<string>('');
+  const [isSubmittingFinalize, setIsSubmittingFinalize] = useState<boolean>(false);
+  const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const [finalizeSuccessToast, setFinalizeSuccessToast] = useState<string | null>(null);
 
   const isEmployeeUser = currentUser?.role === 'employee' || currentUser?.role === 'user';
   const canAssignOS = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || Boolean(currentUser?.permissions?.canAssignOS);
@@ -645,6 +658,212 @@ export const Reports: React.FC = () => {
       } finally {
           setCompletingOsId(null);
       }
+  };
+
+  const getNowDateTimeString = () => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  };
+
+  const resolveTechnicianForFinalize = useCallback(() => {
+    if (currentUser?.ixcEmployeeId) {
+      const found = technicians.find(t => String(t.id) === String(currentUser.ixcEmployeeId));
+      if (found) return { id: String(found.id), name: found.name };
+      return { id: String(currentUser.ixcEmployeeId), name: currentUser.name || `Técnico #${currentUser.ixcEmployeeId}` };
+    }
+    if (currentUser?.name) {
+      const norm = currentUser.name.toLowerCase().trim();
+      const found = technicians.find(t => {
+        const tNorm = t.name.toLowerCase().trim();
+        return tNorm === norm || tNorm.includes(norm) || norm.includes(tNorm);
+      });
+      if (found) return { id: String(found.id), name: found.name };
+    }
+    if (technicians.length > 0) {
+      return { id: String(technicians[0].id), name: technicians[0].name };
+    }
+    return { id: '', name: currentUser?.name || currentUserName || 'Técnico' };
+  }, [currentUser, technicians, currentUserName]);
+
+  const handleOpenFinalizeModal = (row: SubjectReportRow) => {
+    setFinalizingOs(row);
+    setFinalizeError(null);
+    setFinalizeDateTime(getNowDateTimeString());
+
+    const tech = resolveTechnicianForFinalize();
+    setFinalizeTechnicianId(tech.id);
+    setFinalizeTechnicianName(tech.name);
+
+    // Identifica resposta padrão associada ao assunto se houver
+    const sub = subjectsMap.get(row.subjectId);
+    const preferredRespId = sub?.id_resposta_padrao_finalizacao || sub?.id_resposta_padrao || (row.responseId !== '-' ? row.responseId : '');
+
+    let initialText = '';
+    if (preferredRespId && responsesMap.has(preferredRespId)) {
+      setFinalizeResponseId(preferredRespId);
+      initialText = responsesMap.get(preferredRespId)?.resposta || '';
+    } else if (row.responseContent && row.responseContent !== '-') {
+      setFinalizeResponseId(row.responseId !== '-' ? row.responseId : '');
+      initialText = row.responseContent;
+    } else {
+      setFinalizeResponseId('');
+      initialText = '';
+    }
+    setFinalizeResponseText(initialText);
+    setIsFinalizeModalOpen(true);
+  };
+
+  const handleSelectResponseTitle = (respId: string) => {
+    setFinalizeResponseId(respId);
+    if (respId && responsesMap.has(respId)) {
+      const respObj = responsesMap.get(respId);
+      if (respObj?.resposta && (!finalizeResponseText || finalizeResponseText.trim() === '')) {
+        setFinalizeResponseText(respObj.resposta);
+      }
+    }
+  };
+
+  const handleFinalizeOsInIxc = async () => {
+    if (!finalizingOs) return;
+    if (!finalizeResponseText || !finalizeResponseText.trim()) {
+      setFinalizeError('Por favor, digite a resposta para finalizar a O.S.');
+      return;
+    }
+
+    setIsSubmittingFinalize(true);
+    setFinalizeError(null);
+
+    try {
+      const config = getApiConfig();
+      const osId = finalizingOs.osId;
+      const finalDateStr = finalizeDateTime || getNowDateTimeString();
+
+      // 1. Tenta obter o registro base da OS para preservar integridade de dados (merge)
+      let baseRecord: Record<string, any> = {};
+      try {
+        const getRes = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado'), {
+          method: 'POST',
+          headers: config.headers,
+          body: JSON.stringify({
+            qtype: 'su_oss_chamado.id',
+            query: osId,
+            oper: '=',
+            rp: '1'
+          })
+        });
+        if (getRes && Array.isArray(getRes.registros) && getRes.registros.length > 0) {
+          baseRecord = getRes.registros[0];
+        }
+      } catch (err) {
+        console.warn('Aviso: Não foi possível obter registro base para merge, enviando campos diretos:', err);
+      }
+
+      // 2. Prepara o payload para finalização no IXC
+      const updatePayload: Record<string, any> = {
+        ...baseRecord,
+        status: 'F', // Finalizada
+        data_fechamento: finalDateStr,
+        data_final: finalDateStr,
+        mensagem_resposta: finalizeResponseText.trim()
+      };
+
+      if (finalizeTechnicianId) {
+        updatePayload.id_tecnico = finalizeTechnicianId;
+      }
+      if (finalizeResponseId) {
+        updatePayload.id_resposta = finalizeResponseId;
+        updatePayload.id_resposta_padrao = finalizeResponseId;
+      }
+
+      // Remove chave primária id do payload
+      delete updatePayload.id;
+
+      // 3. Executa o PUT no IXC através do proxy seguro
+      const updateRes = await safeFetch(buildUrl(config, `/webservice/v1/su_oss_chamado/${osId}`), {
+        method: 'PUT',
+        headers: config.headers,
+        body: JSON.stringify(updatePayload)
+      });
+
+      if (updateRes && updateRes.type === 'error') {
+        throw new Error(updateRes.message || 'Erro retornado pela API do IXC ao finalizar a O.S.');
+      }
+
+      // 4. Salva a conclusão no banco de dados local
+      try {
+        await fetch('/api/os-assignments/complete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-company-id': String(config.id)
+          },
+          body: JSON.stringify({
+            companyId: config.id,
+            osId,
+            completed: true,
+            completedBy: currentUser?.name || currentUserName
+          })
+        });
+      } catch (e) {
+        console.warn('Aviso: falha ao persistir conclusão no banco local:', e);
+      }
+
+      // Atualiza o mapa de atribuições/conclusões
+      setOsAssignments(prev => ({
+        ...prev,
+        [osId]: {
+          ...(prev[osId] || { osId, userId: currentUser?.id || '', assignedName: currentUser?.name || currentUserName }),
+          completed: true,
+          completedAt: new Date().toISOString(),
+          completedBy: currentUser?.name || currentUserName
+        }
+      }));
+
+      // 5. Atualiza o estado em memória da tabela de O.S.
+      const selectedRespItem = finalizeResponseId ? responsesMap.get(finalizeResponseId) : null;
+      const finalRespTitle = selectedRespItem ? selectedRespItem.titulo : (finalizingOs.responseTitle || '-');
+      const finalTechName = finalizeTechnicianName || (technicians.find(t => String(t.id) === String(finalizeTechnicianId))?.name) || finalizingOs.technicianName;
+
+      setSubjectReportData(prev => {
+        if (!prev) return prev;
+        return prev.map(item => {
+          if (item.osId === osId) {
+            return {
+              ...item,
+              status: 'Finalizada',
+              statusCode: 'F',
+              closingDate: finalDateStr,
+              responseId: finalizeResponseId || item.responseId,
+              responseTitle: finalRespTitle,
+              responseContent: finalizeResponseText.trim(),
+              technicianId: finalizeTechnicianId || item.technicianId,
+              technicianName: finalTechName
+            };
+          }
+          return item;
+        });
+      });
+
+      setFinalizeSuccessToast(`O.S. #${osId} finalizada com sucesso no IXC e marcada como concluída!`);
+      setTimeout(() => setFinalizeSuccessToast(null), 5000);
+      setIsFinalizeModalOpen(false);
+      setFinalizingOs(null);
+
+    } catch (err: any) {
+      console.error('Erro na finalização da OS no IXC:', err);
+      setFinalizeError(err.message || 'Falha ao comunicar com o IXC. Verifique a integração e tente novamente.');
+    } finally {
+      setIsSubmittingFinalize(false);
+    }
+  };
+
+  const handleJustConcludeLocally = async () => {
+    if (!finalizingOs) return;
+    const osId = finalizingOs.osId;
+    await handleToggleCompleteOs(osId, true);
+    setIsFinalizeModalOpen(false);
+    setFinalizingOs(null);
   };
 
   const handleOpenWhaticketModal = async (row: SubjectReportRow) => {
@@ -1767,23 +1986,30 @@ export const Reports: React.FC = () => {
     }
   }, [activeSubTab, isEmployeeUser, subjectReportData, isLoadingSubject, getApiConfig]);
 
-  // Total de OSs concluídas
+  // Helper para verificar se a OS está concluída (no banco local OU com status de Finalizada no IXC)
+  const isRowConcluded = useCallback((row: SubjectReportRow) => {
+    const isCompletedInDb = Boolean(osAssignments[row.osId]?.completed);
+    const isFinalizedInIxc = row.statusCode === 'F' || row.status === 'Finalizada' || row.status === 'Fechado';
+    return isCompletedInDb || isFinalizedInIxc;
+  }, [osAssignments]);
+
+  // Total de OSs concluídas (inclui O.S. com status Finalizada no IXC ou concluídas manualmente)
   const completedAssignmentsCount = React.useMemo(() => {
     if (!subjectReportData) return 0;
-    return subjectReportData.filter(r => Boolean(osAssignments[r.osId]?.completed)).length;
-  }, [subjectReportData, osAssignments]);
+    return subjectReportData.filter(r => isRowConcluded(r)).length;
+  }, [subjectReportData, isRowConcluded]);
 
   // Filtragem local rápida para a tabela do Relatório por Assunto
   const filteredSubjectRows = React.useMemo(() => {
     if (!subjectReportData) return [];
 
-    // Filtro por O.S. Concluída (quando showCompleted é falso, oculta as concluídas da tela; quando ativo, lista as concluídas)
+    // Filtro por O.S. Concluída (quando showCompleted é falso, oculta as concluídas e finalizadas da tela; quando ativo, lista as concluídas)
     let rows = subjectReportData.filter(row => {
-      const isCompleted = Boolean(osAssignments[row.osId]?.completed);
+      const isConcluded = isRowConcluded(row);
       if (showCompleted) {
-        return isCompleted;
+        return isConcluded;
       } else {
-        return !isCompleted;
+        return !isConcluded;
       }
     });
 
@@ -3446,15 +3672,23 @@ export const Reports: React.FC = () => {
                                   )
                                 )}
 
-                                {/* Botão Concluir para OS atribuída a um funcionário */}
-                                {(assignment || isEmployeeUser) && (
-                                  (assignment?.completed || osAssignments[row.osId]?.completed) ? (
+                                {/* Botão Concluir / Finalizada */}
+                                {(assignment || isEmployeeUser || canAssignOS) && (
+                                  (row.statusCode === 'F' || row.status === 'Finalizada' || row.status === 'Fechado') ? (
+                                    <span 
+                                      title="Ordem de Serviço já Finalizada no IXC"
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs shrink-0"
+                                    >
+                                      <CheckCircle2 size={12} className="text-emerald-700" />
+                                      <span>Finalizada</span>
+                                    </span>
+                                  ) : (assignment?.completed || osAssignments[row.osId]?.completed) ? (
                                     <button
                                       type="button"
                                       disabled={completingOsId === row.osId}
                                       onClick={() => handleToggleCompleteOs(row.osId, false)}
                                       title="O.S. Concluída! Clique para reabrir se necessário."
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 transition-colors shadow-2xs shrink-0"
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 transition-colors shadow-2xs shrink-0 cursor-pointer"
                                     >
                                       {completingOsId === row.osId ? (
                                         <Loader2 size={12} className="animate-spin" />
@@ -3466,16 +3700,11 @@ export const Reports: React.FC = () => {
                                   ) : (
                                     <button
                                       type="button"
-                                      disabled={completingOsId === row.osId}
-                                      onClick={() => handleToggleCompleteOs(row.osId, true)}
-                                      title="Marcar O.S. como Concluída (ela sairá da tela e ficará concluída)"
-                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-2xs shrink-0 disabled:opacity-50"
+                                      onClick={() => handleOpenFinalizeModal(row)}
+                                      title="Finalizar esta O.S. no IXC via API e concluir"
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-2xs shrink-0 cursor-pointer"
                                     >
-                                      {completingOsId === row.osId ? (
-                                        <Loader2 size={12} className="animate-spin" />
-                                      ) : (
-                                        <CheckCircle2 size={12} />
-                                      )}
+                                      <CheckCircle2 size={12} />
                                       <span>Concluir</span>
                                     </button>
                                   )
@@ -4151,6 +4380,236 @@ export const Reports: React.FC = () => {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Modal Finalizar O.S. no IXC via API */}
+          {isFinalizeModalOpen && finalizingOs && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 no-print">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in duration-150 flex flex-col max-h-[92vh]">
+                {/* Header do Modal */}
+                <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-emerald-50/70">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm">
+                      <CheckCircle2 size={22} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-gray-900 text-base flex items-center gap-2">
+                        <span>Finalizar Ordem de Serviço</span>
+                        <span className="font-mono text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded text-xs border border-emerald-300">
+                          #{finalizingOs.osId}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-gray-500">
+                        Finalização direta no IXC via API e conclusão no painel
+                      </p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => { setIsFinalizeModalOpen(false); setFinalizingOs(null); }} 
+                    className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-white/80 transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {/* Corpo do Modal */}
+                <div className="p-5 space-y-4 overflow-y-auto flex-1 text-xs">
+                  
+                  {/* Informações Resumidas da O.S. */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <span className="text-gray-500 text-[11px] block font-medium">Cliente</span>
+                      <strong className="text-gray-900 text-xs block truncate">
+                        {clientCache[finalizingOs.clientId] || finalizingOs.clientName}
+                      </strong>
+                      <span className="text-[10px] text-gray-400 font-mono">ID: #{finalizingOs.clientId}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-gray-500 text-[11px] block font-medium">Assunto da O.S.</span>
+                      <strong className="text-gray-900 text-xs block truncate">
+                        {finalizingOs.subjectTitle}
+                      </strong>
+                      <span className="text-[10px] text-gray-400 font-mono">ID: #{finalizingOs.subjectId}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-gray-500 text-[11px] block font-medium">Status Atual no IXC</span>
+                      <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                        {finalizingOs.status}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-gray-500 text-[11px] block font-medium">Data de Abertura</span>
+                      <span className="text-gray-700 font-mono text-[11px]">
+                        {formatDateBR(finalizingOs.openingDate)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Campo 1: Título da Resposta (vindo da API IXC - su_oss_respostas) */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-800 mb-1.5">
+                      Título da Resposta <span className="font-normal text-gray-500">(API IXC • su_oss_respostas)</span>
+                    </label>
+                    <select
+                      value={finalizeResponseId}
+                      onChange={e => handleSelectResponseTitle(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg p-2.5 text-xs text-gray-800 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                    >
+                      <option value="">Selecione um título / modelo de resposta da API...</option>
+                      {availableResponses.map(resp => (
+                        <option key={resp.id} value={resp.id}>
+                          [#{resp.id}] {resp.titulo}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-[10px] text-gray-400 mt-1 block">
+                      Selecione um dos modelos de resposta cadastrados no IXC para preencher ou vincular à finalização.
+                    </span>
+                  </div>
+
+                  {/* Campo 2: Resposta (digitada pelo funcionário) */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1.5">
+                      <label className="block text-xs font-bold text-gray-800">
+                        Resposta da Finalização <span className="text-red-500">*</span> <span className="font-normal text-gray-500">(Digitada pelo funcionário)</span>
+                      </label>
+                      {finalizeResponseId && responsesMap.has(finalizeResponseId) && (
+                        <button
+                          type="button"
+                          onClick={() => setFinalizeResponseText(responsesMap.get(finalizeResponseId)?.resposta || '')}
+                          className="text-[11px] text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
+                        >
+                          Recarregar texto padrão deste modelo
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      value={finalizeResponseText}
+                      onChange={e => setFinalizeResponseText(e.target.value)}
+                      rows={4}
+                      placeholder="Digite aqui o parecer técnico, o que foi resolvido ou a mensagem que será gravada no IXC..."
+                      className="w-full border border-gray-300 rounded-lg p-3 text-xs text-gray-900 focus:ring-emerald-500 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* Campo 3: Data e Hora da Finalização (Automático) */}
+                    <div>
+                      <label className="block text-xs font-bold text-gray-800 mb-1.5 flex items-center justify-between">
+                        <span>Data da Finalização</span>
+                        <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold border border-emerald-200">
+                          Automático • Data/Hora Atual
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <Calendar size={14} className="absolute left-3 top-2.5 text-gray-400" />
+                          <input
+                            type="text"
+                            readOnly
+                            value={finalizeDateTime}
+                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFinalizeDateTime(getNowDateTimeString())}
+                          title="Atualizar data e hora para agora"
+                          className="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                        >
+                          <RefreshCw size={13} />
+                          <span>Agora</span>
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-gray-400 mt-1 block">
+                        Capturado automaticamente no momento da finalização.
+                      </span>
+                    </div>
+
+                    {/* Campo 4: Técnico Responsável (Usuário logado no sistema) */}
+                    <div>
+                      <label className="block text-xs font-bold text-gray-800 mb-1.5 flex items-center justify-between">
+                        <span>Técnico Responsável</span>
+                        <span className="text-[10px] text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded font-semibold border border-blue-200">
+                          Usuário Logado
+                        </span>
+                      </label>
+                      <select
+                        value={finalizeTechnicianId}
+                        onChange={e => {
+                          setFinalizeTechnicianId(e.target.value);
+                          const found = technicians.find(t => String(t.id) === e.target.value);
+                          if (found) setFinalizeTechnicianName(found.name);
+                        }}
+                        className="w-full border border-gray-300 rounded-lg p-2 text-xs font-semibold text-gray-800 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                      >
+                        <option value="">Selecione o Técnico Responsável</option>
+                        {technicians.map(t => (
+                          <option key={t.id} value={t.id}>
+                            [#{t.id}] {t.name} {t.role ? `(${t.role})` : ''} {String(t.id) === String(currentUser?.ixcEmployeeId) ? '★ (Você)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[10px] text-gray-400 mt-1 block">
+                        Vinculado automaticamente ao seu usuário ({currentUser?.name || currentUserName}).
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Feedback de Erro */}
+                  {finalizeError && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-start gap-2">
+                      <AlertTriangle size={16} className="text-red-600 shrink-0 mt-0.5" />
+                      <span>{finalizeError}</span>
+                    </div>
+                  )}
+
+                </div>
+
+                {/* Footer do Modal */}
+                <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleJustConcludeLocally}
+                    title="Marca apenas como concluída no painel local sem enviar PUT ao IXC"
+                    className="text-xs text-slate-500 hover:text-slate-800 underline font-medium cursor-pointer"
+                  >
+                    Apenas Concluir no Painel (Local)
+                  </button>
+
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      onClick={() => { setIsFinalizeModalOpen(false); setFinalizingOs(null); }}
+                      className="px-4 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmittingFinalize || !finalizeResponseText.trim()}
+                      onClick={handleFinalizeOsInIxc}
+                      className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm cursor-pointer"
+                    >
+                      {isSubmittingFinalize ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      <span>Finalizar O.S. no IXC</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Toast de Sucesso da Finalização */}
+          {finalizeSuccessToast && (
+            <div className="fixed bottom-6 right-6 z-50 p-4 rounded-xl shadow-xl flex items-center gap-3 text-xs font-semibold bg-emerald-600 text-white no-print animate-in slide-in-from-bottom-2">
+              <CheckCircle2 size={18} />
+              <span>{finalizeSuccessToast}</span>
             </div>
           )}
         </>
