@@ -1,6 +1,27 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Building2, MapPin, Key, Upload, Globe, ShieldCheck, Mail, Phone, Loader2, MessageSquare, CheckCircle2, AlertCircle, Layers } from 'lucide-react';
-import { Company, OpaTemplate, OpaChannel, OpaDepartment } from '../types';
+import { 
+  Save, 
+  Building2, 
+  MapPin, 
+  Key, 
+  Upload, 
+  Globe, 
+  ShieldCheck, 
+  Mail, 
+  Phone, 
+  Loader2, 
+  MessageSquare, 
+  CheckCircle2, 
+  AlertCircle, 
+  Send, 
+  Eye, 
+  EyeOff, 
+  Radio, 
+  Wifi, 
+  Layers,
+  Sparkles
+} from 'lucide-react';
+import { Company, WhaticketConnection, WhaticketCheckNumberResult } from '../types';
 
 export const CompanySettings: React.FC = () => {
   const [company, setCompany] = useState<Company>({
@@ -12,11 +33,13 @@ export const CompanySettings: React.FC = () => {
     phone: '',
     ixcDomain: '',
     ixcToken: '',
-    opaSuiteUrl: '',
-    opaSuiteToken: '',
-    opaSuiteCanalId: '',
-    opaSuiteDefaultTemplateId: '',
-    opaSuiteDefaultDepartmentId: '',
+    whaticketUrl: 'https://apichat.unityautomacoes.com.br',
+    whaticketToken: '',
+    whaticketDefaultUserId: '',
+    whaticketDefaultQueueId: '',
+    whaticketSendSignature: false,
+    whaticketCloseTicket: false,
+    whaticketFastSend: true,
     useCorsProxy: true,
     logoUrl: null
   });
@@ -25,209 +48,238 @@ export const CompanySettings: React.FC = () => {
   const [isFetching, setIsFetching] = useState(true);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
 
-  // Opa Suite templates, departamentos e canais de WhatsApp
-  const [opaTemplates, setOpaTemplates] = useState<OpaTemplate[]>([]);
-  const [opaChannels, setOpaChannels] = useState<OpaChannel[]>([]);
-  const [opaDepartments, setOpaDepartments] = useState<OpaDepartment[]>([]);
-  const [testingOpa, setTestingOpa] = useState(false);
-  const [opaTestStatus, setOpaTestStatus] = useState<{ success: boolean; text: string } | null>(null);
+  // Estados da Integração Whaticket
+  const [showToken, setShowToken] = useState(false);
+  const [whaticketConnections, setWhaticketConnections] = useState<WhaticketConnection[]>([]);
+  const [isLoadingConnections, setIsLoadingConnections] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<{ success: boolean; text: string } | null>(null);
+
+  // Estados de Teste de Número e Envio
+  const [testPhoneNumber, setTestPhoneNumber] = useState('');
+  const [testMessageText, setTestMessageText] = useState('Olá! Esta é uma mensagem de teste enviada via integração Whaticket do Unity Score.');
+  const [isCheckingNumber, setIsCheckingNumber] = useState(false);
+  const [checkNumberResult, setCheckNumberResult] = useState<WhaticketCheckNumberResult | null>(null);
+  const [checkNumberError, setCheckNumberError] = useState<string | null>(null);
+  const [isSendingTestMessage, setIsSendingTestMessage] = useState(false);
+  const [testSendResult, setTestSendResult] = useState<{ success: boolean; text: string } | null>(null);
 
   useEffect(() => {
     loadCompanyData();
   }, []);
 
   const loadCompanyData = async () => {
-     setIsFetching(true);
-     const savedLocal = localStorage.getItem('unity_company_data');
-     let companyId = null;
-     
-     if (savedLocal) {
-         try {
-           const parsed = JSON.parse(savedLocal);
-           companyId = parsed.id;
-         } catch (e) {}
-     }
-     
-     if (!companyId) {
-         setIsFetching(false);
-         return;
-     }
-
-     try {
-         const res = await fetch(`/api/companies/${companyId}`);
-         if (res.ok) {
-             const data = await res.json();
-             const fullData: Company = { 
-                 ...data, 
-                 useCorsProxy: true,
-                 id: data.id.toString(),
-                 opaSuiteUrl: data.opa_suite_url || data.opaSuiteUrl || '',
-                 opaSuiteToken: data.opa_suite_token || data.opaSuiteToken || '',
-                 opaSuiteCanalId: data.opa_suite_canal_id || data.opaSuiteCanalId || '',
-                 opaSuiteDefaultTemplateId: data.opa_suite_default_template_id || data.opaSuiteDefaultTemplateId || '',
-                 opaSuiteDefaultDepartmentId: data.opa_suite_default_department_id || data.opaSuiteDefaultDepartmentId || ''
-             };
-             setCompany(fullData);
-             localStorage.setItem('unity_company_data', JSON.stringify(fullData));
-
-             // Se já tem URL e Token do Opa Suite configurados, busca os dados da API
-             if (fullData.opaSuiteUrl && fullData.opaSuiteToken) {
-               fetchOpaChannels(fullData.id, fullData.opaSuiteCanalId);
-               fetchOpaDepartments(fullData.id);
-               fetchOpaTemplates(fullData.id, fullData.opaSuiteCanalId);
-             }
-         }
-     } catch (e) {
-         console.error("Erro ao carregar empresa", e);
-     } finally {
-         setIsFetching(false);
-     }
-  };
-
-  const fetchOpaTemplates = async (companyId: string, canalId?: string) => {
-    try {
-      const canalParam = canalId ? `&canalId=${encodeURIComponent(canalId)}` : '';
-      const res = await fetch(`/api/opasuite/templates?companyId=${companyId}${canalParam}`);
-      if (res.ok) {
-        const data = await res.json();
-        const templates = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaTemplates(templates);
-        if (templates.length > 0) {
-          setCompany(prev => {
-            if (!prev.opaSuiteDefaultTemplateId) {
-              return { ...prev, opaSuiteDefaultTemplateId: templates[0]._id };
-            }
-            return prev;
-          });
-        }
-      }
-    } catch (e) {
-      console.warn("Não foi possível carregar templates do Opa Suite:", e);
+    setIsFetching(true);
+    const savedLocal = localStorage.getItem('unity_company_data');
+    let companyId = null;
+    
+    if (savedLocal) {
+      try {
+        const parsed = JSON.parse(savedLocal);
+        companyId = parsed.id;
+      } catch (e) {}
     }
-  };
-
-  const fetchOpaDepartments = async (companyId: string) => {
-    try {
-      const res = await fetch(`/api/opasuite/departamentos?companyId=${companyId}`);
-      if (res.ok) {
-        const data = await res.json();
-        const depts = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaDepartments(depts);
-      }
-    } catch (e) {
-      console.warn("Não foi possível carregar departamentos do Opa Suite:", e);
-    }
-  };
-
-  const fetchOpaChannels = async (companyId: string, currentCanalId?: string) => {
-    try {
-      const res = await fetch(`/api/opasuite/canais?companyId=${companyId}&canal=Whatsapp`);
-      if (res.ok) {
-        const data = await res.json();
-        const channels: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaChannels(channels);
-        if (channels.length > 0) {
-          const selectedId = currentCanalId || channels.find(c => c.status === 'A')?._id || channels[0]._id;
-          setCompany(prev => {
-            if (!prev.opaSuiteCanalId) {
-              return { ...prev, opaSuiteCanalId: selectedId };
-            }
-            return prev;
-          });
-          // Se encontrou canal, busca templates associados àquele canal
-          fetchOpaTemplates(companyId, selectedId);
-        }
-      }
-    } catch (e) {
-      console.warn("Não foi possível carregar canais do Opa Suite:", e);
-    }
-  };
-
-  const testOpaConnection = async () => {
-    if (!company.opaSuiteUrl || !company.opaSuiteToken) {
-      setOpaTestStatus({ success: false, text: 'Preencha a URL e o Token do Opa! Suite antes de testar.' });
+    
+    if (!companyId) {
+      setIsFetching(false);
       return;
     }
-    setTestingOpa(true);
-    setOpaTestStatus(null);
+
     try {
-      const directUrlParam = company.opaSuiteUrl ? `&directUrl=${encodeURIComponent(company.opaSuiteUrl)}` : '';
-      const directTokenParam = company.opaSuiteToken ? `&directToken=${encodeURIComponent(company.opaSuiteToken)}` : '';
+      const res = await fetch(`/api/companies/${companyId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const fullData: Company = { 
+          ...data, 
+          useCorsProxy: true,
+          id: data.id.toString(),
+          whaticketUrl: data.whaticketUrl || 'https://apichat.unityautomacoes.com.br',
+          whaticketToken: data.whaticketToken || '',
+          whaticketDefaultUserId: data.whaticketDefaultUserId || '',
+          whaticketDefaultQueueId: data.whaticketDefaultQueueId || '',
+          whaticketSendSignature: Boolean(data.whaticketSendSignature),
+          whaticketCloseTicket: Boolean(data.whaticketCloseTicket),
+          whaticketFastSend: data.whaticketFastSend !== false
+        };
+        setCompany(fullData);
+        localStorage.setItem('unity_company_data', JSON.stringify(fullData));
 
-      // 1. Busca Canais de WhatsApp e Departamentos em paralelo
-      const [resCanais, resDepts] = await Promise.all([
-        fetch(`/api/opasuite/canais?companyId=${company.id}&canal=Whatsapp${directUrlParam}${directTokenParam}`),
-        fetch(`/api/opasuite/departamentos?companyId=${company.id}${directUrlParam}${directTokenParam}`)
-      ]);
-
-      let channelCount = 0;
-      let deptCount = 0;
-      let targetCanalId = company.opaSuiteCanalId;
-
-      if (resCanais.ok) {
-        const data = await resCanais.json();
-        const channels: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaChannels(channels);
-        channelCount = channels.length;
-        if (channels.length > 0) {
-          if (!targetCanalId) {
-            const active = channels.find(c => c.status === 'A') || channels[0];
-            targetCanalId = active._id;
-            setCompany(prev => ({ ...prev, opaSuiteCanalId: active._id }));
-          }
+        if (fullData.whaticketToken) {
+          fetchConnections(fullData.id, fullData.whaticketUrl, fullData.whaticketToken);
         }
       }
+    } catch (e) {
+      console.error("Erro ao carregar empresa", e);
+    } finally {
+      setIsFetching(false);
+    }
+  };
 
-      if (resDepts.ok) {
-        const data = await resDepts.json();
-        const depts: OpaDepartment[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaDepartments(depts);
-        deptCount = depts.length;
-      }
+  const fetchConnections = async (companyId?: string, directUrl?: string, directToken?: string) => {
+    const url = directUrl || company.whaticketUrl || 'https://apichat.unityautomacoes.com.br';
+    const token = directToken || company.whaticketToken;
 
-      // 2. Busca templates por canal (usando o targetCanalId selecionado)
-      const canalParam = targetCanalId ? `&canalId=${encodeURIComponent(targetCanalId)}` : '';
-      const resTemplates = await fetch(`/api/opasuite/templates?companyId=${company.id}${canalParam}${directUrlParam}${directTokenParam}`);
+    if (!token) {
+      setConnectionStatus({ success: false, text: 'Informe o Token do Whaticket para consultar as conexões.' });
+      return;
+    }
 
-      let templateCount = 0;
-      if (resTemplates.ok) {
-        const data = await resTemplates.json();
-        const templates = Array.isArray(data) ? data : (data.data || data.registros || []);
-        setOpaTemplates(templates);
-        templateCount = templates.length;
-        if (templates.length > 0 && !company.opaSuiteDefaultTemplateId) {
-          setCompany(prev => ({ ...prev, opaSuiteDefaultTemplateId: templates[0]._id }));
+    setIsLoadingConnections(true);
+    setConnectionStatus(null);
+
+    try {
+      const res = await fetch('/api/whaticket/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: companyId || company.id,
+          directUrl: url,
+          directToken: token
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data) {
+        const list: WhaticketConnection[] = Array.isArray(data) 
+          ? data 
+          : (data.connections || data.data || []);
+        
+        setWhaticketConnections(list);
+        if (list.length > 0) {
+          setConnectionStatus({
+            success: true,
+            text: `Conexão validada! ${list.length} conexão(ões) encontrada(s) no Whaticket.`
+          });
+        } else {
+          setConnectionStatus({
+            success: true,
+            text: 'Token válido! Porém nenhuma conexão cadastrada no Whaticket ainda.'
+          });
         }
-      }
-
-      if (resCanais.ok || resDepts.ok || resTemplates.ok) {
-        setOpaTestStatus({ 
-          success: true, 
-          text: `Conexão bem-sucedida! ${channelCount} canal(is) WhatsApp, ${deptCount} departamento(s) e ${templateCount} template(s) identificados no Opa! Suite.` 
-        });
       } else {
-        const err = await resTemplates.json().catch(() => ({}));
-        setOpaTestStatus({ 
-          success: false, 
-          text: `Falha na conexão: ${err.error || 'Verifique se a URL e o Token estão corretos e salve as alterações.'}` 
+        setConnectionStatus({
+          success: false,
+          text: `Erro ao consultar conexões: ${data.error || data.message || 'Token inválido ou não autorizado'}`
         });
       }
     } catch (e: any) {
-      setOpaTestStatus({ 
-        success: false, 
-        text: `Erro ao conectar com Opa! Suite: ${e.message || 'Verifique a rede ou URL'}` 
+      setConnectionStatus({
+        success: false,
+        text: `Falha na requisição: ${e.message || 'Erro de rede'}`
       });
     } finally {
-      setTestingOpa(false);
+      setIsLoadingConnections(false);
+    }
+  };
+
+  const handleCheckTestNumber = async () => {
+    const token = company.whaticketToken;
+    if (!token) {
+      setCheckNumberError('Informe o Token do Whaticket antes de verificar.');
+      return;
+    }
+
+    const cleanNum = testPhoneNumber.replace(/\D/g, '');
+    if (!cleanNum || cleanNum.length < 8) {
+      setCheckNumberError('Informe um número válido com DDD (ex: 5511999998888).');
+      return;
+    }
+
+    setIsCheckingNumber(true);
+    setCheckNumberResult(null);
+    setCheckNumberError(null);
+
+    try {
+      const res = await fetch('/api/whaticket/check-number', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: company.id,
+          directUrl: company.whaticketUrl,
+          directToken: token,
+          number: testPhoneNumber
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data && (data.existsInWhatsapp !== undefined || data.number)) {
+        setCheckNumberResult(data);
+      } else {
+        setCheckNumberError(data.error || data.message || 'Não foi possível verificar este número no WhatsApp.');
+      }
+    } catch (e: any) {
+      setCheckNumberError(e.message || 'Erro na requisição');
+    } finally {
+      setIsCheckingNumber(false);
+    }
+  };
+
+  const handleSendTestMessage = async () => {
+    const token = company.whaticketToken;
+    if (!token) {
+      setTestSendResult({ success: false, text: 'Informe o Token do Whaticket para enviar mensagens.' });
+      return;
+    }
+
+    const cleanNum = testPhoneNumber.replace(/\D/g, '');
+    if (!cleanNum || cleanNum.length < 8) {
+      setTestSendResult({ success: false, text: 'Informe um número com DDD (ex: 5511999998888).' });
+      return;
+    }
+
+    setIsSendingTestMessage(true);
+    setTestSendResult(null);
+
+    try {
+      const res = await fetch('/api/whaticket/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: company.id,
+          directUrl: company.whaticketUrl,
+          directToken: token,
+          number: testPhoneNumber,
+          body: testMessageText,
+          fastSend: company.whaticketFastSend !== false,
+          userId: company.whaticketDefaultUserId || undefined,
+          queueId: company.whaticketDefaultQueueId || undefined,
+          sendSignature: company.whaticketSendSignature,
+          closeTicket: company.whaticketCloseTicket
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.ok && (data.status === 'SUCCESS' || data.id || data.message || !data.error)) {
+        setTestSendResult({
+          success: true,
+          text: `Mensagem enviada com sucesso para ${testPhoneNumber}! Status: ${data.message || 'Entregue'}`
+        });
+      } else {
+        setTestSendResult({
+          success: false,
+          text: `Erro ao enviar: ${data.error || data.message || 'Verifique o número e as configurações da conexão.'}`
+        });
+      }
+    } catch (e: any) {
+      setTestSendResult({
+        success: false,
+        text: `Falha no envio: ${e.message || 'Erro de comunicação'}`
+      });
+    } finally {
+      setIsSendingTestMessage(false);
     }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setCompany(prev => ({ 
-      ...prev, 
-      [name]: value 
-    }));
+    const { name, value, type } = e.target;
+    if (type === 'checkbox') {
+      const target = e.target as HTMLInputElement;
+      setCompany(prev => ({ ...prev, [name]: target.checked }));
+    } else {
+      setCompany(prev => ({ ...prev, [name]: value }));
+    }
   };
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,34 +300,32 @@ export const CompanySettings: React.FC = () => {
 
     try {
       const res = await fetch(`/api/companies/${company.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(company)
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(company)
       });
 
       if (!res.ok) throw new Error('Falha ao salvar');
 
-      // Atualiza cache local
       localStorage.setItem('unity_company_data', JSON.stringify(company));
-      
-      setMessage({ type: 'success', text: 'Dados da empresa atualizados com sucesso!' });
+      setMessage({ type: 'success', text: 'Dados da empresa e integração Whaticket salvos com sucesso!' });
     } catch (e) {
       setMessage({ type: 'error', text: 'Erro ao salvar configurações.' });
     } finally {
       setIsLoading(false);
-      setTimeout(() => setMessage(null), 3000);
+      setTimeout(() => setMessage(null), 3500);
     }
   };
 
   if (isFetching) {
-      return <div className="flex justify-center p-10"><Loader2 className="animate-spin text-brand-600" size={32} /></div>;
+    return <div className="flex justify-center p-10"><Loader2 className="animate-spin text-brand-600" size={32} /></div>;
   }
 
   return (
-    <div className="max-w-4xl mx-auto animate-in fade-in">
+    <div className="max-w-4xl mx-auto animate-in fade-in pb-12">
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-800">Configurações da Empresa</h2>
-        <p className="text-gray-500">Gerencie os dados do provedor e integrações.</p>
+        <p className="text-gray-500">Gerencie os dados do provedor, integração com o IXC Soft e o Whaticket (WhatsApp).</p>
       </div>
 
       <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -301,86 +351,82 @@ export const CompanySettings: React.FC = () => {
                     onChange={handleLogoChange}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
-                </div>
-                <div className="mt-2 flex items-center gap-2 text-sm text-brand-600">
-                  <Upload size={16} />
-                  <span>Clique para alterar</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="w-full md:w-2/3 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nome do Provedor</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Building2 className="h-5 w-5 text-gray-400" />
-                    </div>
-                    <input
-                      type="text"
-                      name="name"
-                      value={company.name}
-                      onChange={handleChange}
-                      className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                      placeholder="Ex: Unity Fibra"
-                      required
-                    />
+                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <Upload className="text-white h-6 w-6" />
                   </div>
                 </div>
+              </div>
+              <p className="mt-2 text-xs text-gray-400">PNG, JPG até 2MB</p>
+            </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">CNPJ</label>
+            {/* Informações Básicas */}
+            <div className="w-full md:w-2/3 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Razão Social / Nome</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Building2 className="h-5 w-5 text-gray-400" />
+                  </div>
                   <input
                     type="text"
-                    name="cnpj"
-                    value={company.cnpj}
+                    name="name"
+                    value={company.name}
                     onChange={handleChange}
-                    className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                    placeholder="00.000.000/0000-00"
+                    className="pl-10 block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    placeholder="Nome da sua empresa"
                     required
                   />
                 </div>
               </div>
 
-              {/* New Contact Fields */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email Comercial</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Mail className="h-5 w-5 text-gray-400" />
-                    </div>
-                    <input
-                      type="email"
-                      name="email"
-                      value={company.email || ''}
-                      onChange={handleChange}
-                      className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                      placeholder="contato@empresa.com"
-                    />
-                  </div>
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">CNPJ</label>
+                <input
+                  type="text"
+                  name="cnpj"
+                  value={company.cnpj}
+                  onChange={handleChange}
+                  className="block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                  placeholder="00.000.000/0000-00"
+                  required
+                />
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Telefone / WhatsApp</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Phone className="h-5 w-5 text-gray-400" />
-                    </div>
-                    <input
-                      type="text"
-                      name="phone"
-                      value={company.phone || ''}
-                      onChange={handleChange}
-                      className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                      placeholder="(00) 00000-0000"
-                    />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">E-mail de Contato</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Mail className="h-5 w-5 text-gray-400" />
                   </div>
+                  <input
+                    type="email"
+                    name="email"
+                    value={company.email || ''}
+                    onChange={handleChange}
+                    className="pl-10 block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    placeholder="contato@empresa.com"
+                  />
                 </div>
               </div>
 
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Telefone Comercial</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Phone className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    name="phone"
+                    value={company.phone || ''}
+                    onChange={handleChange}
+                    className="pl-10 block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    placeholder="(00) 0000-0000"
+                  />
+                </div>
+              </div>
+
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Endereço Completo</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -391,273 +437,431 @@ export const CompanySettings: React.FC = () => {
                     name="address"
                     value={company.address || ''}
                     onChange={handleChange}
-                    className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                    placeholder="Rua Exemplo, 123 - Centro, Cidade - UF"
+                    className="pl-10 block w-full rounded-lg border-gray-300 border p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
+                    placeholder="Rua, Número, Bairro, Cidade - UF"
                   />
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-gray-100">
-                <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
-                  <Key className="text-yellow-500" size={20} />
-                  Integração IXC Soft
-                </h3>
-
-                <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Domínio do Sistema (URL)</label>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Globe className="h-5 w-5 text-gray-400" />
-                      </div>
-                      <input
-                        type="text"
-                        name="ixcDomain"
-                        value={company.ixcDomain || ''}
-                        onChange={handleChange}
-                        className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                        placeholder="https://ixc.meuprovedor.com.br"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        URL base do seu IXC (inclua https://). O acesso será feito via Proxy Seguro interno.
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Token de Acesso (API)</label>
-                    <div className="relative">
-                      <input
-                        type="password"
-                        name="ixcToken"
-                        value={company.ixcToken || ''}
-                        onChange={handleChange}
-                        className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                        placeholder="ID:TOKEN"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Token gerado no formato ID:TOKEN.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="bg-green-50 border border-green-100 rounded-lg p-4 mt-2">
-                    <label className="flex items-start gap-3">
-                      <div className="flex items-center h-5 mt-1">
-                        <ShieldCheck className="text-green-600" size={20} />
-                      </div>
-                      <div>
-                        <span className="flex items-center gap-2 text-sm font-medium text-gray-900">
-                          Proxy Interno Ativado
-                        </span>
-                        <p className="text-xs text-gray-600 mt-1">
-                          Para segurança e evitar erros de CORS, todas as requisições agora passam pelo nosso servidor backend.
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {/* Seção Integração Opa! Suite */}
-              <div className="pt-6 border-t border-gray-100">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
-                    <MessageSquare className="text-brand-600" size={20} />
-                    Integração Opa! Suite
-                  </h3>
-                  <span className="text-xs font-semibold px-2.5 py-1 bg-brand-50 text-brand-700 rounded-full border border-brand-200">
-                    Envio de Templates & Notificações
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">URL da API do Opa! Suite</label>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Globe className="h-5 w-5 text-gray-400" />
-                      </div>
-                      <input
-                        type="text"
-                        name="opaSuiteUrl"
-                        value={company.opaSuiteUrl || ''}
-                        onChange={handleChange}
-                        className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                        placeholder="https://chat.meuprovedor.com.br"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Endereço base do Opa! Suite onde a API está publicada (ex: https://meudominio.com.br).
-                      </p>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Token de Acesso da API (Bearer)</label>
-                    <div className="relative">
-                      <input
-                        type="password"
-                        name="opaSuiteToken"
-                        value={company.opaSuiteToken || ''}
-                        onChange={handleChange}
-                        className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                        placeholder="Token de autorização gerado no Opa! Suite"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Token enviado no cabeçalho Authorization: Bearer para autenticar as solicitações.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
-                        <span>Canal WhatsApp</span>
-                        <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
-                          <CheckCircle2 size={12} /> WhatsApp
-                        </span>
-                      </label>
-                      {opaChannels.length > 0 ? (
-                        <select
-                          name="opaSuiteCanalId"
-                          value={company.opaSuiteCanalId || ''}
-                          onChange={(e) => {
-                            handleChange(e);
-                            if (e.target.value && company.id) {
-                              fetchOpaTemplates(company.id, e.target.value);
-                            }
-                          }}
-                          className="block w-full rounded-lg border-emerald-300 border bg-white p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-medium text-gray-800"
-                        >
-                          <option value="">Selecione o canal WhatsApp...</option>
-                          {opaChannels.map(c => (
-                            <option key={c._id} value={c._id}>
-                              {c.nome || 'Canal WhatsApp'} {c.integracao ? `(${c.integracao})` : ''} {c.status === 'A' ? '• Ativo' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          name="opaSuiteCanalId"
-                          value={company.opaSuiteCanalId || ''}
-                          onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                          placeholder="ID do Canal WhatsApp (ex: 212b435c1...)"
-                        />
-                      )}
-                      <p className="mt-1 text-xs text-gray-500">
-                        Canal exclusivo do WhatsApp para envio das mensagens.
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
-                        <span>Departamento (Opa! Suite)</span>
-                        {opaDepartments.length > 0 && (
-                          <span className="text-[11px] text-gray-400 font-normal">
-                            {opaDepartments.length} disponível(is)
-                          </span>
-                        )}
-                      </label>
-                      {opaDepartments.length > 0 ? (
-                        <select
-                          name="opaSuiteDefaultDepartmentId"
-                          value={company.opaSuiteDefaultDepartmentId || ''}
-                          onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                        >
-                          <option value="">Selecione o departamento (opcional)...</option>
-                          {opaDepartments.map(d => (
-                            <option key={d._id} value={d._id}>
-                              {d.nome} {d.status === 'A' ? '• Ativo' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          name="opaSuiteDefaultDepartmentId"
-                          value={company.opaSuiteDefaultDepartmentId || ''}
-                          onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                          placeholder="ID do Departamento (opcional)"
-                        />
-                      )}
-                      <p className="mt-1 text-xs text-gray-500">
-                        Departamento de atendimento associado.
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
-                        <span>Template Padrão</span>
-                        {opaTemplates.length > 0 && (
-                          <span className="text-[11px] text-emerald-600 font-semibold">
-                            {opaTemplates.length} do canal
-                          </span>
-                        )}
-                      </label>
-                      {opaTemplates.length > 0 ? (
-                        <select
-                          name="opaSuiteDefaultTemplateId"
-                          value={company.opaSuiteDefaultTemplateId || ''}
-                          onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500"
-                        >
-                          <option value="">Selecione o template padrão...</option>
-                          {opaTemplates.map(t => (
-                            <option key={t._id} value={t._id}>
-                              {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto?.substring(0, 45)}...
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          name="opaSuiteDefaultTemplateId"
-                          value={company.opaSuiteDefaultTemplateId || ''}
-                          onChange={handleChange}
-                          className="block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
-                          placeholder="ID do Template (ex: 60a...)"
-                        />
-                      )}
-                      <p className="mt-1 text-xs text-gray-500">
-                        Template do canal selecionado por padrão ao enviar.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Teste de Conexão */}
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-slate-50 border border-slate-200 rounded-lg mt-2">
-                    <div>
-                      <span className="text-sm font-medium text-slate-800 block">Testar Comunicação com Opa! Suite</span>
-                      <span className="text-xs text-slate-500">Valida se a URL e o Token conseguem consultar a API do Opa Suite.</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={testOpaConnection}
-                      disabled={testingOpa || !company.opaSuiteUrl || !company.opaSuiteToken}
-                      className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-50 transition-colors shadow-xs"
-                    >
-                      {testingOpa ? <Loader2 className="animate-spin" size={14} /> : <MessageSquare size={14} />}
-                      Testar Conexão
-                    </button>
-                  </div>
-
-                  {opaTestStatus && (
-                    <div className={`p-3 rounded-lg border flex items-center gap-2 text-xs font-medium ${
-                      opaTestStatus.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
-                    }`}>
-                      {opaTestStatus.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                      <span>{opaTestStatus.text}</span>
-                    </div>
-                  )}
-
                 </div>
               </div>
             </div>
           </div>
+
+          <hr className="border-gray-200" />
+
+          {/* Seção Integrações */}
+          <div>
+            <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
+              <Key className="text-brand-600" size={20} />
+              Integração IXC Soft
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Domínio / Host do IXC</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Globe className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    name="ixcDomain"
+                    value={company.ixcDomain}
+                    onChange={handleChange}
+                    className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
+                    placeholder="meuprovedor.com.br"
+                    required
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Exemplo: meuprovedor.com.br ou 192.168.1.1 (sem https://)</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Token do Webservice (Bearer / Basic)</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <ShieldCheck className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    type="password"
+                    name="ixcToken"
+                    value={company.ixcToken}
+                    onChange={handleChange}
+                    className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-brand-500 focus:ring-brand-500 font-mono"
+                    placeholder="Token do usuário de API gerado no IXC"
+                    required
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Token gerado em Configurações &gt; Usuários &gt; Usuários do Sistema &gt; Editar &gt; Aba Webservice</p>
+              </div>
+            </div>
+          </div>
+
+          <hr className="border-gray-200" />
+
+          {/* NOVA SEÇÃO: INTEGRAÇÃO WHATICKET (WHATSAPP) */}
+          <div className="pt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <MessageSquare className="text-emerald-600" size={22} />
+                  Integração Whaticket (WhatsApp)
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Conexão oficial via API Whaticket para envio de mensagens, alertas de OS e notificações instantâneas aos clientes.
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+                <Wifi size={12} className="text-emerald-600" />
+                API Chat Whaticket
+              </span>
+            </div>
+
+            {/* Banner de Instrução da Documentação */}
+            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 mb-5 text-xs text-emerald-950 space-y-1.5">
+              <div className="font-bold text-emerald-900 flex items-center gap-1.5">
+                <Sparkles size={14} className="text-emerald-700" />
+                Instruções Importantes de Conexão:
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-emerald-900">
+                <li>
+                  Antes de enviar mensagens, cadastre o <strong>token</strong> vinculado à conexão que fará o envio. No Whaticket, acesse <strong>Conexões</strong>, edite a conexão e informe/copie o token.
+                </li>
+                <li>
+                  O número deve conter somente <strong>Código do País + DDD + Número</strong>, sem máscara ou caracteres especiais (ex.: <code className="font-mono bg-emerald-100/80 px-1 py-0.5 rounded text-emerald-900">5511999998888</code>).
+                </li>
+                <li>
+                  Todos os endpoints utilizam autenticação <code className="font-mono bg-emerald-100/80 px-1 py-0.5 rounded text-emerald-900">Authorization: Bearer SEU_TOKEN</code>.
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-4">
+              {/* URL da API Whaticket */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">URL da API do Whaticket</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Globe className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    name="whaticketUrl"
+                    value={company.whaticketUrl || 'https://apichat.unityautomacoes.com.br'}
+                    onChange={handleChange}
+                    className="pl-10 block w-full rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-mono text-gray-800"
+                    placeholder="https://apichat.unityautomacoes.com.br"
+                    required
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  URL base do servidor Whaticket (padrão: <span className="font-mono">https://apichat.unityautomacoes.com.br</span>).
+                </p>
+              </div>
+
+              {/* Token do Whaticket */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
+                  <span>Token da Conexão Whaticket (Bearer)</span>
+                  <span className="text-[11px] text-emerald-600 font-semibold">Obrigatório para envio</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showToken ? "text" : "password"}
+                    name="whaticketToken"
+                    value={company.whaticketToken || ''}
+                    onChange={handleChange}
+                    className="block w-full pr-10 rounded-lg border-gray-300 border bg-gray-50 p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-mono"
+                    placeholder="Cole aqui o token cadastrado na sua conexão do Whaticket"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowToken(!showToken)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                  >
+                    {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Token gerado na aba <strong>Conexões</strong> do Whaticket ao editar a conexão do WhatsApp.
+                </p>
+              </div>
+
+              {/* Modo de Envio Padrão */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                <label className="block text-sm font-bold text-slate-800 mb-2">
+                  Modo de Envio Padrão
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                    company.whaticketFastSend !== false
+                      ? 'bg-emerald-50/70 border-emerald-300 ring-1 ring-emerald-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100/50'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="whaticketFastSend"
+                      checked={company.whaticketFastSend !== false}
+                      onChange={() => setCompany(prev => ({ ...prev, whaticketFastSend: true }))}
+                      className="mt-1 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">Envio Sem Ticket (Disparo Rápido)</span>
+                      <span className="text-[11px] text-slate-500">
+                        Dispara a mensagem diretamente no WhatsApp sem abrir ou registrar ticket. Ideal para confirmações e notificações de OS.
+                      </span>
+                    </div>
+                  </label>
+
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                    company.whaticketFastSend === false
+                      ? 'bg-emerald-50/70 border-emerald-300 ring-1 ring-emerald-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100/50'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="whaticketFastSend"
+                      checked={company.whaticketFastSend === false}
+                      onChange={() => setCompany(prev => ({ ...prev, whaticketFastSend: false }))}
+                      className="mt-1 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">Envio Com Ticket (Atendimento)</span>
+                      <span className="text-[11px] text-slate-500">
+                        Cria e vincula um ticket de atendimento no painel do Whaticket, permitindo vincular fila e atendente.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Parâmetros Opcionais de Ticket */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    ID da Fila Padrão (queueId)
+                  </label>
+                  <input
+                    type="text"
+                    name="whaticketDefaultQueueId"
+                    value={company.whaticketDefaultQueueId || ''}
+                    onChange={handleChange}
+                    className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-mono"
+                    placeholder="Ex: 1, 2 ou deixe em branco"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    ID numérico da fila do Whaticket para onde o ticket será direcionado (quando enviado com ticket).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    ID do Atendente Padrão (userId)
+                  </label>
+                  <input
+                    type="text"
+                    name="whaticketDefaultUserId"
+                    value={company.whaticketDefaultUserId || ''}
+                    onChange={handleChange}
+                    className="block w-full rounded-lg border-gray-300 border bg-white p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 font-mono"
+                    placeholder="Ex: 5, 12 ou deixe em branco"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    ID numérico do atendente no Whaticket. Pode ser sobrescrito pelo atendente vinculado ao usuário.
+                  </p>
+                </div>
+              </div>
+
+              {/* Toggles de Assinatura e Fechamento */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                <label className="flex items-center gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100/70 transition-colors">
+                  <input
+                    type="checkbox"
+                    name="whaticketSendSignature"
+                    checked={Boolean(company.whaticketSendSignature)}
+                    onChange={handleChange}
+                    className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-slate-800 block">Enviar Assinatura</span>
+                    <span className="text-slate-500">Inclui o nome do atendente configurado no Whaticket na mensagem.</span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100/70 transition-colors">
+                  <input
+                    type="checkbox"
+                    name="whaticketCloseTicket"
+                    checked={Boolean(company.whaticketCloseTicket)}
+                    onChange={handleChange}
+                    className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-slate-800 block">Fechar Ticket Automaticamente</span>
+                    <span className="text-slate-500">Encerra o ticket logo após o envio (quando enviado com ticket).</span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Painel de Conexões Ativas e Teste de Comunicação */}
+              <div className="mt-4 border border-slate-200 rounded-xl p-4 bg-slate-50/70 space-y-3">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Wifi size={16} className="text-emerald-600" />
+                      Conexões Disponíveis no Whaticket
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Consulta os WhatsApps conectados à sua conta via <code className="font-mono">/api/messages/connections</code>.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => fetchConnections()}
+                    disabled={isLoadingConnections || !company.whaticketToken}
+                    className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold text-emerald-700 bg-white border border-emerald-300 rounded-lg hover:bg-emerald-50 disabled:opacity-50 transition-colors shadow-2xs"
+                  >
+                    {isLoadingConnections ? <Loader2 className="animate-spin" size={14} /> : <MessageSquare size={14} />}
+                    <span>Consultar Conexões</span>
+                  </button>
+                </div>
+
+                {connectionStatus && (
+                  <div className={`p-3 rounded-lg border flex items-center gap-2 text-xs font-medium ${
+                    connectionStatus.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
+                  }`}>
+                    {connectionStatus.success ? <CheckCircle2 size={16} className="shrink-0" /> : <AlertCircle size={16} className="shrink-0" />}
+                    <span>{connectionStatus.text}</span>
+                  </div>
+                )}
+
+                {/* Lista de Conexões */}
+                {whaticketConnections.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
+                    {whaticketConnections.map(conn => (
+                      <div key={conn.id} className="p-3 bg-white border border-slate-200 rounded-lg flex items-center justify-between text-xs shadow-2xs">
+                        <div>
+                          <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                            <span>{conn.name}</span>
+                            {conn.isDefault && (
+                              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-semibold">Padrão</span>
+                            )}
+                          </div>
+                          <div className="text-slate-500 font-mono text-[11px]">
+                            {conn.number ? `+${conn.number}` : `ID: #${conn.id}`}
+                          </div>
+                        </div>
+
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider ${
+                          conn.status === 'CONNECTED' 
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                            : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {conn.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Seção de Teste de Envio Rápido e Verificação de Número */}
+              <div className="mt-4 border border-slate-200 rounded-xl p-4 bg-slate-50/70 space-y-3">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Send size={15} className="text-brand-600" />
+                    Validação de Número & Disparo de Teste
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    Valide se um número possui WhatsApp ativo no Whaticket e teste o envio em tempo real.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="sm:col-span-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Telefone com DDD (ex: 5511999998888)
+                    </label>
+                    <input
+                      type="text"
+                      value={testPhoneNumber}
+                      onChange={e => setTestPhoneNumber(e.target.value)}
+                      placeholder="5585999998888"
+                      className="w-full rounded-lg border-gray-300 border p-2 text-xs bg-white font-mono"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Texto da Mensagem de Teste
+                    </label>
+                    <input
+                      type="text"
+                      value={testMessageText}
+                      onChange={e => setTestMessageText(e.target.value)}
+                      className="w-full rounded-lg border-gray-300 border p-2 text-xs bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleCheckTestNumber}
+                    disabled={isCheckingNumber || !testPhoneNumber || !company.whaticketToken}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-50 transition-colors"
+                  >
+                    {isCheckingNumber ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} className="text-emerald-600" />}
+                    <span>Verificar WhatsApp</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSendTestMessage}
+                    disabled={isSendingTestMessage || !testPhoneNumber || !company.whaticketToken}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-2xs"
+                  >
+                    {isSendingTestMessage ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                    <span>Enviar Teste Agora</span>
+                  </button>
+                </div>
+
+                {/* Retorno da Verificação de Número */}
+                {checkNumberResult && (
+                  <div className={`p-2.5 rounded-lg border text-xs font-medium flex items-center gap-2 ${
+                    checkNumberResult.existsInWhatsapp 
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                      : 'bg-amber-50 text-amber-800 border-amber-200'
+                  }`}>
+                    {checkNumberResult.existsInWhatsapp ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+                    <span>
+                      {checkNumberResult.existsInWhatsapp 
+                        ? `Número verificado: Possui WhatsApp ativo (${checkNumberResult.numberFormatted || checkNumberResult.number})` 
+                        : `O número ${checkNumberResult.number} não foi encontrado no WhatsApp.`}
+                    </span>
+                  </div>
+                )}
+
+                {checkNumberError && (
+                  <div className="p-2.5 rounded-lg border bg-red-50 text-red-800 border-red-200 text-xs font-medium flex items-center gap-2">
+                    <AlertCircle size={15} />
+                    <span>{checkNumberError}</span>
+                  </div>
+                )}
+
+                {/* Retorno do Envio de Teste */}
+                {testSendResult && (
+                  <div className={`p-2.5 rounded-lg border text-xs font-medium flex items-center gap-2 ${
+                    testSendResult.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
+                  }`}>
+                    {testSendResult.success ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+                    <span>{testSendResult.text}</span>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
         </div>
 
         {/* Footer Actions */}

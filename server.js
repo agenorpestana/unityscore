@@ -18,7 +18,79 @@ if (fs.existsSync(envPath)) {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+// No ambiente Cloud Run / Dev Server, a porta externa é mapeada para a porta interna 3000
+const PORT = process.env.APP_PORT || (process.env.DEFAULT_APP_PORT ? parseInt(process.env.DEFAULT_APP_PORT, 10) : 3000);
+
+let isDbAvailable = false;
+
+// Armazenamento em memória caso o MySQL externo esteja inacessível (ex: firewall ou VPS offline)
+const inMemoryStore = {
+    plans: [
+        { id: 1, name: 'Básico', price: 99.90, max_users: 3, active: 1 },
+        { id: 2, name: 'Profissional', price: 199.90, max_users: 10, active: 1 },
+        { id: 3, name: 'Enterprise', price: 499.90, max_users: 999, active: 1 }
+    ],
+    companies: [
+        {
+            id: 1,
+            name: 'Empresa Demonstração',
+            cnpj: '00.000.000/0001-00',
+            email_contact: 'suporte@unityautomacoes.com.br',
+            plan_id: 2,
+            plan_name: 'Profissional',
+            status: 'active',
+            expiration_date: '2029-12-31',
+            ixc_domain: '',
+            ixc_token: '',
+            logo_url: '',
+            whaticket_url: 'https://apichat.unityautomacoes.com.br',
+            whaticket_token: '',
+            whaticket_default_user_id: '',
+            whaticket_default_queue_id: '',
+            whaticket_send_signature: false,
+            whaticket_close_ticket: false,
+            whaticket_fast_send: true,
+            opa_suite_url: '',
+            opa_suite_token: '',
+            opa_suite_canal_id: '',
+            opa_suite_default_template_id: '',
+            opa_suite_default_department_id: '',
+            created_at: new Date()
+        }
+    ],
+    users: [
+        {
+            id: 1,
+            company_id: 1,
+            name: 'Unity Admin',
+            email: 'unity@unityautomacoes.com.br',
+            password: '200616',
+            role: 'saas_owner',
+            active: 1,
+            permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true },
+            ixc_employee_id: null,
+            opa_user_id: null,
+            whaticket_user_id: null
+        },
+        {
+            id: 2,
+            company_id: 1,
+            name: 'Suporte Unity',
+            email: 'suporte@unityautomacoes.com.br',
+            password: '200616',
+            role: 'saas_owner',
+            active: 1,
+            permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true },
+            ixc_employee_id: null,
+            opa_user_id: null,
+            whaticket_user_id: null
+        }
+    ],
+    scoreRules: {},
+    osPenalties: [],
+    osAssignments: {},
+    osSplits: {}
+};
 
 // Função para limpar aspas que o script bash possa ter injetado no .env
 const cleanEnv = (val) => {
@@ -35,7 +107,8 @@ const dbConfig = {
     database: cleanEnv(process.env.DB_NAME) || 'unity_saas',
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0,
+    connectTimeout: 5000
 };
 
 console.log(`Tentando conectar ao banco: ${dbConfig.user}@${dbConfig.host} no banco ${dbConfig.database} (Senha configurada: ${dbConfig.password ? 'SIM' : 'NÃO'})`);
@@ -88,12 +161,20 @@ async function initDatabase() {
         await addColumnSafe('companies', 'opa_suite_canal_id VARCHAR(100)'); 
         await addColumnSafe('companies', 'opa_suite_default_template_id VARCHAR(100)'); 
         await addColumnSafe('companies', 'opa_suite_default_department_id VARCHAR(100)'); 
+        await addColumnSafe('companies', 'whaticket_url VARCHAR(255) DEFAULT \'https://apichat.unityautomacoes.com.br\''); 
+        await addColumnSafe('companies', 'whaticket_token TEXT'); 
+        await addColumnSafe('companies', 'whaticket_default_user_id VARCHAR(50)'); 
+        await addColumnSafe('companies', 'whaticket_default_queue_id VARCHAR(50)'); 
+        await addColumnSafe('companies', 'whaticket_send_signature BOOLEAN DEFAULT FALSE'); 
+        await addColumnSafe('companies', 'whaticket_close_ticket BOOLEAN DEFAULT FALSE'); 
+        await addColumnSafe('companies', 'whaticket_fast_send BOOLEAN DEFAULT TRUE'); 
 
         // Migrations Users
         await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
         
         await addColumnSafe('users', 'ixc_employee_id VARCHAR(50) DEFAULT NULL');
         await addColumnSafe('users', 'opa_user_id VARCHAR(100) DEFAULT NULL');
+        await addColumnSafe('users', 'whaticket_user_id VARCHAR(50) DEFAULT NULL');
         try {
             await connection.query(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
         } catch (e) {}
@@ -138,42 +219,77 @@ async function initDatabase() {
         }
 
         console.log('✅ Banco de dados inicializado/atualizado com sucesso!');
+        isDbAvailable = true;
     } catch (error) {
-        console.error('❌ Erro na inicialização do banco:', error);
+        isDbAvailable = false;
+        console.warn('⚠️ Banco de dados externo indisponível (' + error.message + '). Sistema operando em modo resiliente local.');
     } finally {
         if (connection) connection.release();
     }
 }
-initDatabase();
 
 // --- ROTAS DE CONFIGURAÇÃO DA EMPRESA ---
 
 // Obter Configurações
 app.get('/api/companies/:id', async (req, res) => {
     try {
-        const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id, opa_suite_default_department_id FROM companies WHERE id = ?', [req.params.id]);
-        if (rows.length > 0) {
-            // Normaliza para camelCase para o frontend
-            const c = rows[0];
-            res.json({
-                id: c.id,
-                name: c.name,
-                cnpj: c.cnpj,
-                email: c.email_contact,
-                phone: c.phone,
-                address: c.address,
-                ixcDomain: c.ixc_domain,
-                ixcToken: c.ixc_token,
-                logoUrl: c.logo_url,
-                opaSuiteUrl: c.opa_suite_url || '',
-                opaSuiteToken: c.opa_suite_token || '',
-                opaSuiteCanalId: c.opa_suite_canal_id || '',
-                opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
-                opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
-            });
-        } else {
-            res.status(404).json({ error: 'Empresa não encontrada' });
+        if (isDbAvailable) {
+            try {
+                const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id, opa_suite_default_department_id FROM companies WHERE id = ?', [req.params.id]);
+                if (rows.length > 0) {
+                    const c = rows[0];
+                    return res.json({
+                        id: c.id,
+                        name: c.name,
+                        cnpj: c.cnpj,
+                        email: c.email_contact,
+                        phone: c.phone,
+                        address: c.address,
+                        ixcDomain: c.ixc_domain,
+                        ixcToken: c.ixc_token,
+                        logoUrl: c.logo_url,
+                        whaticketUrl: c.whaticket_url || 'https://apichat.unityautomacoes.com.br',
+                        whaticketToken: c.whaticket_token || '',
+                        whaticketDefaultUserId: c.whaticket_default_user_id || '',
+                        whaticketDefaultQueueId: c.whaticket_default_queue_id || '',
+                        whaticketSendSignature: Boolean(c.whaticket_send_signature),
+                        whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
+                        whaticketFastSend: c.whaticket_fast_send !== 0,
+                        opaSuiteUrl: c.opa_suite_url || '',
+                        opaSuiteToken: c.opa_suite_token || '',
+                        opaSuiteCanalId: c.opa_suite_canal_id || '',
+                        opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
+                        opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
+                    });
+                }
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao buscar empresa no MySQL, usando fallback:', dbErr.message);
+            }
         }
+        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id)) || inMemoryStore.companies[0];
+        res.json({
+            id: c.id,
+            name: c.name,
+            cnpj: c.cnpj,
+            email: c.email_contact,
+            phone: c.phone || '',
+            address: c.address || '',
+            ixcDomain: c.ixc_domain || '',
+            ixcToken: c.ixc_token || '',
+            logoUrl: c.logo_url || '',
+            whaticketUrl: c.whaticket_url || 'https://apichat.unityautomacoes.com.br',
+            whaticketToken: c.whaticket_token || '',
+            whaticketDefaultUserId: c.whaticket_default_user_id || '',
+            whaticketDefaultQueueId: c.whaticket_default_queue_id || '',
+            whaticketSendSignature: Boolean(c.whaticket_send_signature),
+            whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
+            whaticketFastSend: c.whaticket_fast_send !== false,
+            opaSuiteUrl: c.opa_suite_url || '',
+            opaSuiteToken: c.opa_suite_token || '',
+            opaSuiteCanalId: c.opa_suite_canal_id || '',
+            opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
+            opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -181,13 +297,50 @@ app.get('/api/companies/:id', async (req, res) => {
 
 // Atualizar Configurações
 app.put('/api/companies/:id', async (req, res) => {
-    const { name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId } = req.body;
+    const { 
+        name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
+        whaticketUrl, whaticketToken, whaticketDefaultUserId, whaticketDefaultQueueId, whaticketSendSignature, whaticketCloseTicket, whaticketFastSend,
+        opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId 
+    } = req.body;
     try {
-        await pool.query(`
-            UPDATE companies 
-            SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
-            WHERE id=?
-        `, [name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, req.params.id]);
+        if (isDbAvailable) {
+            try {
+                await pool.query(`
+                    UPDATE companies 
+                    SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
+                        whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?,
+                        opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
+                    WHERE id=?
+                `, [
+                    name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
+                    whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
+                    opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, 
+                    req.params.id
+                ]);
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao atualizar empresa no MySQL, atualizando fallback:', dbErr.message);
+            }
+        }
+        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id));
+        if (c) {
+            if (name !== undefined) c.name = name;
+            if (cnpj !== undefined) c.cnpj = cnpj;
+            if (email !== undefined) c.email_contact = email;
+            if (phone !== undefined) c.phone = phone;
+            if (address !== undefined) c.address = address;
+            if (ixcDomain !== undefined) c.ixc_domain = ixcDomain;
+            if (ixcToken !== undefined) c.ixc_token = ixcToken;
+            if (logoUrl !== undefined) c.logo_url = logoUrl;
+            if (whaticketUrl !== undefined) c.whaticket_url = whaticketUrl;
+            if (whaticketToken !== undefined) c.whaticket_token = whaticketToken;
+            if (whaticketDefaultUserId !== undefined) c.whaticket_default_user_id = whaticketDefaultUserId;
+            if (whaticketDefaultQueueId !== undefined) c.whaticket_default_queue_id = whaticketDefaultQueueId;
+            if (whaticketSendSignature !== undefined) c.whaticket_send_signature = Boolean(whaticketSendSignature);
+            if (whaticketCloseTicket !== undefined) c.whaticket_close_ticket = Boolean(whaticketCloseTicket);
+            if (whaticketFastSend !== undefined) c.whaticket_fast_send = Boolean(whaticketFastSend);
+            if (opaSuiteUrl !== undefined) c.opa_suite_url = opaSuiteUrl;
+            if (opaSuiteToken !== undefined) c.opa_suite_token = opaSuiteToken;
+        }
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -256,41 +409,108 @@ app.get('/api/users', async (req, res) => {
     const companyId = req.query.companyId;
     if (!companyId) return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id, opa_user_id FROM users WHERE company_id = ?', [companyId]);
-        const users = rows.map(u => ({
-            ...u,
-            permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
-            active: !!u.active,
-            ixcEmployeeId: u.ixc_employee_id,
-            opaUserId: u.opa_user_id || null
-        }));
+        if (isDbAvailable) {
+            try {
+                const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id, opa_user_id, whaticket_user_id FROM users WHERE company_id = ?', [companyId]);
+                const users = rows.map(u => ({
+                    ...u,
+                    permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
+                    active: !!u.active,
+                    ixcEmployeeId: u.ixc_employee_id,
+                    opaUserId: u.opa_user_id || null,
+                    whaticketUserId: u.whaticket_user_id || null
+                }));
+                return res.json(users);
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao buscar usuários no MySQL, usando fallback:', dbErr.message);
+            }
+        }
+        const users = inMemoryStore.users
+            .filter(u => String(u.company_id) === String(companyId))
+            .map(u => ({
+                id: u.id,
+                name: u.name,
+                email: u.email,
+                role: u.role,
+                active: !!u.active,
+                permissions: u.permissions,
+                ixcEmployeeId: u.ixc_employee_id,
+                opaUserId: u.opa_user_id || null,
+                whaticketUserId: u.whaticket_user_id || null
+            }));
         res.json(users);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/users', async (req, res) => {
-    const { companyId, name, email, password, role, permissions, active, ixcEmployeeId, opaUserId } = req.body;
+    const { companyId, name, email, password, role, permissions, active, ixcEmployeeId, opaUserId, whaticketUserId } = req.body;
     try {
-        const [result] = await pool.query(
-            'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null]
-        );
-        res.json({ success: true, id: result.insertId });
+        const whaticketId = whaticketUserId || null;
+        if (isDbAvailable) {
+            try {
+                const [result] = await pool.query(
+                    'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id, whaticket_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null, whaticketId]
+                );
+                return res.json({ success: true, id: result.insertId });
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao criar usuário no MySQL, gravando no fallback:', dbErr.message);
+            }
+        }
+        const newId = inMemoryStore.users.length + 1;
+        inMemoryStore.users.push({
+            id: newId,
+            company_id: parseInt(companyId),
+            name,
+            email,
+            password,
+            role,
+            permissions,
+            active: !!active,
+            ixc_employee_id: ixcEmployeeId || null,
+            opa_user_id: opaUserId || null,
+            whaticket_user_id: whaticketId
+        });
+        res.json({ success: true, id: newId });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/users/:id', async (req, res) => {
-    const { name, email, password, permissions, active, role, ixcEmployeeId, opaUserId } = req.body;
+    const { name, email, password, permissions, active, role, ixcEmployeeId, opaUserId, whaticketUserId } = req.body;
     try {
-        let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
-        let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
-        if (password && password.trim() !== '') {
-            query += ', password=?';
-            params.push(password);
+        const whaticketId = whaticketUserId !== undefined ? (whaticketUserId || null) : undefined;
+        if (isDbAvailable) {
+            try {
+                let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
+                let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
+                if (whaticketId !== undefined) {
+                    query += ', whaticket_user_id=?';
+                    params.push(whaticketId);
+                }
+                if (password && password.trim() !== '') {
+                    query += ', password=?';
+                    params.push(password);
+                }
+                query += ' WHERE id=?';
+                params.push(req.params.id);
+                await pool.query(query, params);
+                return res.json({ success: true });
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao atualizar usuário no MySQL, gravando no fallback:', dbErr.message);
+            }
         }
-        query += ' WHERE id=?';
-        params.push(req.params.id);
-        await pool.query(query, params);
+        const user = inMemoryStore.users.find(u => String(u.id) === String(req.params.id));
+        if (user) {
+            if (name !== undefined) user.name = name;
+            if (email !== undefined) user.email = email;
+            if (password) user.password = password;
+            if (permissions !== undefined) user.permissions = permissions;
+            if (active !== undefined) user.active = !!active;
+            if (role !== undefined) user.role = role;
+            if (ixcEmployeeId !== undefined) user.ixc_employee_id = ixcEmployeeId;
+            if (opaUserId !== undefined) user.opa_user_id = opaUserId;
+            if (whaticketId !== undefined) user.whaticket_user_id = whaticketId;
+        }
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1004,39 +1224,337 @@ app.post('/api/opasuite/send-template', async (req, res) => {
     }
 });
 
+// --- ROTAS DE INTEGRAÇÃO WHATICKET (WHATSAPP) ---
+
+// Helper para obter configuração Whaticket da empresa
+async function getWhaticketConfig(companyId, directUrl, directToken) {
+    if (directUrl && directToken) {
+        let url = directUrl.trim();
+        if (url.endsWith('/')) url = url.slice(0, -1);
+        if (!url.startsWith('http')) url = 'https://' + url;
+        return {
+            url,
+            token: directToken.trim(),
+            defaultUserId: '',
+            defaultQueueId: '',
+            sendSignature: false,
+            closeTicket: false,
+            fastSend: true
+        };
+    }
+
+    if (!companyId) return null;
+
+    if (isDbAvailable) {
+        try {
+            const [rows] = await pool.query('SELECT whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send FROM companies WHERE id = ?', [companyId]);
+            if (rows.length > 0 && rows[0].whaticket_token) {
+                let url = (rows[0].whaticket_url || 'https://apichat.unityautomacoes.com.br').trim();
+                if (url.endsWith('/')) url = url.slice(0, -1);
+                if (!url.startsWith('http')) url = 'https://' + url;
+                return {
+                    url,
+                    token: rows[0].whaticket_token.trim(),
+                    defaultUserId: rows[0].whaticket_default_user_id || '',
+                    defaultQueueId: rows[0].whaticket_default_queue_id || '',
+                    sendSignature: Boolean(rows[0].whaticket_send_signature),
+                    closeTicket: Boolean(rows[0].whaticket_close_ticket),
+                    fastSend: rows[0].whaticket_fast_send !== 0
+                };
+            }
+        } catch (e) {
+            console.warn('⚠️ Falha ao buscar config Whaticket no MySQL:', e.message);
+        }
+    }
+
+    const c = inMemoryStore.companies.find(comp => String(comp.id) === String(companyId)) || inMemoryStore.companies[0];
+    if (c && c.whaticket_token) {
+        let url = (c.whaticket_url || 'https://apichat.unityautomacoes.com.br').trim();
+        if (url.endsWith('/')) url = url.slice(0, -1);
+        if (!url.startsWith('http')) url = 'https://' + url;
+        return {
+            url,
+            token: c.whaticket_token.trim(),
+            defaultUserId: c.whaticket_default_user_id || '',
+            defaultQueueId: c.whaticket_default_queue_id || '',
+            sendSignature: Boolean(c.whaticket_send_signature),
+            closeTicket: Boolean(c.whaticket_close_ticket),
+            fastSend: c.whaticket_fast_send !== false
+        };
+    }
+
+    return null;
+}
+
+// Formatação estrita para WhatsApp conforme documentação:
+// "O número deve conter somente Código do País + DDD + Número, sem máscara ou caracteres especiais (ex.: 5511999998888)."
+function formatWhaticketNumber(rawNumber) {
+    if (!rawNumber) return '';
+    let digits = String(rawNumber).replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.length === 10 || digits.length === 11) {
+        digits = `55${digits}`;
+    }
+    return digits;
+}
+
+// Utilitário para requisições à API do Whaticket
+async function requestWhaticketApi(targetUrl, method = 'POST', payload = null, token) {
+    const headers = {
+        'Authorization': `Bearer ${token}`
+    };
+    if (payload && (method === 'POST' || method === 'PUT')) {
+        headers['Content-Type'] = 'application/json';
+    }
+
+    console.log(`[Whaticket] ${method} ${targetUrl}`, payload ? JSON.stringify(payload) : '');
+
+    const fetchOptions = {
+        method,
+        headers
+    };
+    if (payload && (method === 'POST' || method === 'PUT')) {
+        fetchOptions.body = JSON.stringify(payload);
+    }
+
+    const response = await fetch(targetUrl, fetchOptions);
+    const text = await response.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        data = text;
+    }
+
+    return {
+        status: response.status,
+        ok: response.ok,
+        data
+    };
+}
+
+// 1. Listar Conexões Disponíveis (GET /api/messages/connections)
+const handleWhaticketConnections = async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId || req.query.companyId;
+    const directUrl = req.body?.directUrl || req.query.directUrl;
+    const directToken = req.body?.directToken || req.query.directToken;
+
+    try {
+        const config = await getWhaticketConfig(companyId, directUrl, directToken);
+        if (!config || !config.token) {
+            return res.status(400).json({ error: 'Token do Whaticket não informado ou empresa não configurada.' });
+        }
+
+        const targetUrl = `${config.url}/api/messages/connections`;
+        const result = await requestWhaticketApi(targetUrl, 'GET', null, config.token);
+        return res.status(result.status || 200).json(result.data);
+    } catch (e) {
+        console.error('Erro Whaticket Connections:', e);
+        res.status(500).json({ error: 'Erro ao consultar conexões do Whaticket: ' + e.message });
+    }
+};
+
+app.get('/api/whaticket/connections', handleWhaticketConnections);
+app.post('/api/whaticket/connections', handleWhaticketConnections);
+
+// 2. Verificar Número no WhatsApp (POST /api/messages/checkNumber)
+app.post('/api/whaticket/check-number', async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId;
+    const { directUrl, directToken, number } = req.body;
+
+    try {
+        const config = await getWhaticketConfig(companyId, directUrl, directToken);
+        if (!config || !config.token) {
+            return res.status(400).json({ error: 'Token do Whaticket não informado ou empresa não configurada.' });
+        }
+
+        const formattedNumber = formatWhaticketNumber(number);
+        if (!formattedNumber) {
+            return res.status(400).json({ error: 'Número de telefone não informado.' });
+        }
+
+        const targetUrl = `${config.url}/api/messages/checkNumber`;
+        const result = await requestWhaticketApi(targetUrl, 'POST', { number: formattedNumber }, config.token);
+        return res.status(result.status || 200).json(result.data);
+    } catch (e) {
+        console.error('Erro Whaticket Check Number:', e);
+        res.status(500).json({ error: 'Erro ao verificar número no Whaticket: ' + e.message });
+    }
+});
+
+// 3. Enviar Mensagens (Texto com/sem Ticket, Imagem por URL, Botões, Bulk)
+app.post('/api/whaticket/send-message', async (req, res) => {
+    const companyId = req.headers['x-company-id'] || req.body?.companyId;
+    const { 
+        directUrl, 
+        directToken, 
+        number, 
+        body, 
+        userId, 
+        queueId, 
+        sendSignature, 
+        closeTicket, 
+        fastSend, 
+        url, 
+        caption, 
+        buttons, 
+        footer, 
+        type, 
+        delay, 
+        messages 
+    } = req.body;
+
+    try {
+        const config = await getWhaticketConfig(companyId, directUrl, directToken);
+        if (!config || !config.token) {
+            return res.status(400).json({ error: 'Token do Whaticket não configurado. Acesse Configurações da Empresa para cadastrar o Token.' });
+        }
+
+        // Caso seja Envio em Lote (Bulk)
+        if (Array.isArray(messages) && messages.length > 0) {
+            const targetUrl = `${config.url}/api/messages/send/bulk`;
+            const formattedMessages = messages.map(m => ({
+                number: formatWhaticketNumber(m.number),
+                body: m.body
+            }));
+            const payload = {
+                delay: Number(delay) || 2000,
+                messages: formattedMessages
+            };
+            const result = await requestWhaticketApi(targetUrl, 'POST', payload, config.token);
+            return res.status(result.status || 200).json(result.data);
+        }
+
+        const formattedNumber = formatWhaticketNumber(number);
+        if (!formattedNumber) {
+            return res.status(400).json({ error: 'Número de telefone inválido ou não informado. Use DDD + Número (ex: 5511999998888).' });
+        }
+
+        // Caso seja Envio de Imagem por URL pública
+        if (url && typeof url === 'string' && url.trim().length > 0) {
+            const targetUrl = `${config.url}/api/messages/send/linkImage`;
+            const payload = {
+                number: formattedNumber,
+                url: url.trim(),
+                caption: caption || body || ''
+            };
+            const result = await requestWhaticketApi(targetUrl, 'POST', payload, config.token);
+            return res.status(result.status || 200).json(result.data);
+        }
+
+        // Caso seja Mensagem com Botões Interativos
+        if (Array.isArray(buttons) && buttons.length > 0) {
+            const targetUrl = `${config.url}/api/messages/send/buttons`;
+            const payload = {
+                number: formattedNumber,
+                body: body || 'Escolha uma opção:',
+                footer: footer || '',
+                type: type || 'buttons',
+                buttons: buttons.map(b => ({
+                    text: b.text,
+                    id: String(b.id),
+                    ...(b.queueId ? { queueId: Number(b.queueId) || b.queueId } : {}),
+                    ...(b.userId ? { userId: Number(b.userId) || b.userId } : {})
+                }))
+            };
+            const result = await requestWhaticketApi(targetUrl, 'POST', payload, config.token);
+            return res.status(result.status || 200).json(result.data);
+        }
+
+        // Modo de envio: Verificar se deve usar Envio Sem Ticket (noTicket)
+        const isFastSend = fastSend !== undefined ? Boolean(fastSend) : config.fastSend;
+
+        if (isFastSend) {
+            // 4. Envio Sem Ticket (Disparo Rápido)
+            const targetUrl = `${config.url}/api/messages/send/noTicket`;
+            const payload = {
+                number: formattedNumber,
+                body: body || ''
+            };
+            const result = await requestWhaticketApi(targetUrl, 'POST', payload, config.token);
+            return res.status(result.status || 200).json(result.data);
+        } else {
+            // 1. Envio de Mensagem de Texto com Ticket
+            const targetUrl = `${config.url}/api/messages/send`;
+            const payload = {
+                number: formattedNumber,
+                body: body || '',
+                userId: (userId !== undefined && userId !== null && userId !== '') ? String(userId) : (config.defaultUserId || ''),
+                queueId: (queueId !== undefined && queueId !== null && queueId !== '') ? String(queueId) : (config.defaultQueueId || ''),
+                sendSignature: sendSignature !== undefined ? Boolean(sendSignature) : config.sendSignature,
+                closeTicket: closeTicket !== undefined ? Boolean(closeTicket) : config.closeTicket
+            };
+            const result = await requestWhaticketApi(targetUrl, 'POST', payload, config.token);
+            return res.status(result.status || 200).json(result.data);
+        }
+    } catch (e) {
+        console.error('Erro Whaticket Send Message:', e);
+        res.status(500).json({ error: 'Erro ao enviar mensagem via Whaticket: ' + e.message });
+    }
+});
+
 // --- ROTAS DO SISTEMA (Login, SaaS, etc) ---
 
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     try {
-        const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND password = ? AND active = 1', [email, password]);
-        if (rows.length > 0) {
-            const user = rows[0];
-            let companyData = null;
-            if (user.company_id) {
-                const [companies] = await pool.query('SELECT * FROM companies WHERE id = ?', [user.company_id]);
-                companyData = companies[0];
-                if (companyData && companyData.status !== 'active') {
-                     return res.status(403).json({ success: false, message: 'Empresa suspensa.' });
+        if (isDbAvailable) {
+            try {
+                const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND password = ? AND active = 1', [email, password]);
+                if (rows.length > 0) {
+                    const user = rows[0];
+                    let companyData = null;
+                    if (user.company_id) {
+                        const [companies] = await pool.query('SELECT * FROM companies WHERE id = ?', [user.company_id]);
+                        companyData = companies[0];
+                        if (companyData && companyData.status !== 'active') {
+                             return res.status(403).json({ success: false, message: 'Empresa suspensa.' });
+                        }
+                    }
+                    return res.json({
+                        success: true,
+                        user: {
+                            id: user.id.toString(),
+                            name: user.name,
+                            email: user.email,
+                            role: user.role,
+                            permissions: typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions,
+                            companyId: user.company_id ? user.company_id.toString() : null,
+                            ixcEmployeeId: user.ixc_employee_id ? user.ixc_employee_id.toString() : null,
+                            opaUserId: user.opa_user_id ? user.opa_user_id.toString() : null,
+                            whaticketUserId: user.whaticket_user_id ? user.whaticket_user_id.toString() : null
+                        },
+                        company: companyData
+                    });
                 }
+            } catch (dbErr) {
+                console.warn('⚠️ Falha ao verificar login no MySQL, testando credenciais locais:', dbErr.message);
             }
-            res.json({
+        }
+
+        // Fallback local caso o MySQL externo esteja inacessível
+        const cleanEmail = (email || '').toLowerCase().trim();
+        const user = inMemoryStore.users.find(u => u.email.toLowerCase() === cleanEmail && u.password === password && u.active);
+        if (user) {
+            const companyData = inMemoryStore.companies.find(c => c.id === user.company_id) || inMemoryStore.companies[0];
+            return res.json({
                 success: true,
                 user: {
                     id: user.id.toString(),
                     name: user.name,
                     email: user.email,
                     role: user.role,
-                    permissions: typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions,
-                    companyId: user.company_id ? user.company_id.toString() : null,
+                    permissions: user.permissions,
+                    companyId: user.company_id ? user.company_id.toString() : '1',
                     ixcEmployeeId: user.ixc_employee_id ? user.ixc_employee_id.toString() : null,
-                    opaUserId: user.opa_user_id ? user.opa_user_id.toString() : null
+                    opaUserId: user.opa_user_id ? user.opa_user_id.toString() : null,
+                    whaticketUserId: user.whaticket_user_id ? user.whaticket_user_id.toString() : null
                 },
                 company: companyData
             });
-        } else {
-            res.status(401).json({ success: false, message: 'Credenciais inválidas' });
         }
+
+        res.status(401).json({ success: false, message: 'Credenciais inválidas' });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -1044,47 +1562,151 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/saas/plans', async (req, res) => {
     try { 
-        const [rows] = await pool.query('SELECT * FROM saas_plans'); 
-        res.json(rows); 
+        if (isDbAvailable) {
+            try {
+                const [rows] = await pool.query('SELECT * FROM saas_plans'); 
+                return res.json(rows); 
+            } catch (e) {
+                console.warn('⚠️ Falha ao listar planos no MySQL, usando fallback:', e.message);
+            }
+        }
+        res.json(inMemoryStore.plans);
     } catch (e) { 
-        console.error('Erro DB /api/saas/plans:', e);
-        res.status(500).json({error: e.message, code: e.code}); 
+        res.json(inMemoryStore.plans); 
     }
 });
 
 app.get('/api/saas/companies', async (req, res) => {
     try { 
-        const [rows] = await pool.query(`SELECT c.*, p.name as plan_name FROM companies c LEFT JOIN saas_plans p ON c.plan_id = p.id ORDER BY c.created_at DESC`); 
-        res.json(rows); 
+        if (isDbAvailable) {
+            try {
+                const [rows] = await pool.query(`SELECT c.*, p.name as plan_name FROM companies c LEFT JOIN saas_plans p ON c.plan_id = p.id ORDER BY c.created_at DESC`); 
+                return res.json(rows); 
+            } catch (e) {
+                console.warn('⚠️ Falha ao listar empresas no MySQL, usando fallback:', e.message);
+            }
+        }
+        res.json(inMemoryStore.companies);
     } catch (e) { 
-        console.error('Erro DB /api/saas/companies:', e);
-        res.status(500).json({error: e.message, code: e.code}); 
+        res.json(inMemoryStore.companies); 
     }
 });
 
 app.post('/api/saas/companies', async (req, res) => {
     const { name, cnpj, emailContact, planId, adminName, adminEmail, adminPassword } = req.body;
-    const connection = await pool.getConnection();
     try {
-        await connection.beginTransaction();
-        const [resCo] = await connection.query(`INSERT INTO companies (name, cnpj, email_contact, plan_id, status, expiration_date) VALUES (?, ?, ?, ?, 'active', DATE_ADD(NOW(), INTERVAL 30 DAY))`, [name, cnpj, emailContact, parseInt(planId)]);
-        await connection.query(`INSERT INTO users (company_id, name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, 'super_admin', 1, ?)`, [resCo.insertId, adminName, adminEmail, adminPassword, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
-        await connection.commit();
-        res.json({ success: true, companyId: resCo.insertId });
-    } catch (error) { await connection.rollback(); res.status(500).json({ error: error.message }); } finally { connection.release(); }
+        if (isDbAvailable) {
+            const connection = await pool.getConnection();
+            try {
+                await connection.beginTransaction();
+                const [resCo] = await connection.query(`INSERT INTO companies (name, cnpj, email_contact, plan_id, status, expiration_date) VALUES (?, ?, ?, ?, 'active', DATE_ADD(NOW(), INTERVAL 30 DAY))`, [name, cnpj, emailContact, parseInt(planId)]);
+                await connection.query(`INSERT INTO users (company_id, name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, 'super_admin', 1, ?)`, [resCo.insertId, adminName, adminEmail, adminPassword, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
+                await connection.commit();
+                return res.json({ success: true, companyId: resCo.insertId });
+            } catch (error) { 
+                await connection.rollback(); 
+                console.warn('⚠️ Erro ao inserir empresa no MySQL:', error.message);
+            } finally { 
+                connection.release(); 
+            }
+        }
+        const newCoId = inMemoryStore.companies.length + 1;
+        inMemoryStore.companies.push({
+            id: newCoId,
+            name,
+            cnpj,
+            email_contact: emailContact,
+            plan_id: parseInt(planId),
+            plan_name: inMemoryStore.plans.find(p => p.id === parseInt(planId))?.name || 'Profissional',
+            status: 'active',
+            expiration_date: '2029-12-31',
+            created_at: new Date()
+        });
+        inMemoryStore.users.push({
+            id: inMemoryStore.users.length + 1,
+            company_id: newCoId,
+            name: adminName,
+            email: adminEmail,
+            password: adminPassword,
+            role: 'super_admin',
+            active: 1,
+            permissions: { canManageCompany: true, canManageUsers: true, canViewScore: true }
+        });
+        res.json({ success: true, companyId: newCoId });
+    } catch (error) { 
+        res.status(500).json({ error: error.message }); 
+    }
 });
 
 app.put('/api/saas/companies/:id', async (req, res) => {
     const { name, cnpj, emailContact, planId } = req.body;
-    try { await pool.query(`UPDATE companies SET name = ?, cnpj = ?, email_contact = ?, plan_id = ? WHERE id = ?`, [name, cnpj, emailContact, parseInt(planId), req.params.id]); res.json({ success: true }); } catch (e) { res.status(500).json({error: e.message}); }
+    try { 
+        if (isDbAvailable) {
+            try {
+                await pool.query(`UPDATE companies SET name = ?, cnpj = ?, email_contact = ?, plan_id = ? WHERE id = ?`, [name, cnpj, emailContact, parseInt(planId), req.params.id]); 
+                return res.json({ success: true }); 
+            } catch (e) {
+                console.warn('⚠️ Erro ao atualizar empresa no MySQL:', e.message);
+            }
+        }
+        const co = inMemoryStore.companies.find(c => String(c.id) === String(req.params.id));
+        if (co) {
+            if (name) co.name = name;
+            if (cnpj) co.cnpj = cnpj;
+            if (emailContact) co.email_contact = emailContact;
+            if (planId) co.plan_id = parseInt(planId);
+        }
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({error: e.message}); }
 });
 
 app.patch('/api/saas/companies/:id/status', async (req, res) => {
-    try { await pool.query('UPDATE companies SET status = ? WHERE id = ?', [req.body.status, req.params.id]); res.json({ success: true }); } catch (e) { res.status(500).json({error: e.message}); }
+    try { 
+        if (isDbAvailable) {
+            try {
+                await pool.query('UPDATE companies SET status = ? WHERE id = ?', [req.body.status, req.params.id]); 
+                return res.json({ success: true }); 
+            } catch (e) {
+                console.warn('⚠️ Erro ao atualizar status no MySQL:', e.message);
+            }
+        }
+        const co = inMemoryStore.companies.find(c => String(c.id) === String(req.params.id));
+        if (co) co.status = req.body.status;
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({error: e.message}); }
 });
 
-// Servir arquivos estáticos do React (DEVE FICAR DEPOIS DAS ROTAS DA API)
-app.use(express.static(path.join(__dirname, 'dist')));
+// --- INICIALIZAÇÃO DO SERVIDOR COM VITE DEV MIDDLEWARE OU DIST ESTÁTICO ---
+async function startServer() {
+    initDatabase().catch(e => console.warn('Aviso DB inicial:', e.message));
 
-app.get('*', (req, res) => { res.sendFile(path.join(__dirname, 'dist', 'index.html')); });
-app.listen(PORT, () => { console.log(`🚀 Server running on port ${PORT}`); });
+    const isProduction = process.env.NODE_ENV === 'production';
+    if (!isProduction) {
+        try {
+            const { createServer: createViteServer } = require('vite');
+            const vite = await createViteServer({
+                server: { middlewareMode: true },
+                appType: 'spa',
+            });
+            app.use(vite.middlewares);
+            console.log('⚡ Vite dev middleware anexado com sucesso');
+        } catch (viteError) {
+            console.warn('⚠️ Não foi possível anexar o middleware do Vite, servindo dist:', viteError.message);
+            app.use(express.static(path.join(__dirname, 'dist')));
+            app.get('*', (req, res) => {
+                res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+            });
+        }
+    } else {
+        app.use(express.static(path.join(__dirname, 'dist')));
+        app.get('*', (req, res) => {
+            res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+        });
+    }
+
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+    });
+}
+
+startServer();

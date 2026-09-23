@@ -17,7 +17,8 @@ export interface User {
   active: boolean;
   companyId?: string; // Link to tenant
   ixcEmployeeId?: string; // Link to IXC Employee ID
-  opaUserId?: string; // Link to Opa! Suite Atendente/User ID
+  opaUserId?: string; // Compatibilidade legado Opa! Suite
+  whaticketUserId?: string; // ID do Usuário/Atendente no Whaticket
 }
 
 export interface Company {
@@ -33,12 +34,56 @@ export interface Company {
   useCorsProxy: boolean;
   logoUrl: string | null;
   status?: 'active' | 'inactive' | 'suspended';
-  // Configurações Opa! Suite
+  // Configurações Whaticket (WhatsApp)
+  whaticketUrl?: string;
+  whaticketToken?: string;
+  whaticketDefaultUserId?: string;
+  whaticketDefaultQueueId?: string;
+  whaticketSendSignature?: boolean;
+  whaticketCloseTicket?: boolean;
+  whaticketFastSend?: boolean;
+  // Compatibilidade legada Opa! Suite (opcional)
   opaSuiteUrl?: string;
   opaSuiteToken?: string;
   opaSuiteCanalId?: string;
   opaSuiteDefaultTemplateId?: string;
   opaSuiteDefaultDepartmentId?: string;
+}
+
+export interface WhaticketConnection {
+  id: number | string;
+  name: string;
+  status: string;
+  isDefault?: boolean;
+  number?: string;
+  channel?: string;
+}
+
+export interface WhaticketButton {
+  text: string;
+  id: string;
+  queueId?: number | string;
+  userId?: number | string;
+}
+
+export interface WhaticketSendPayload {
+  number: string;
+  body: string;
+  userId?: string;
+  queueId?: string;
+  sendSignature?: boolean;
+  closeTicket?: boolean;
+  fastSend?: boolean;
+  url?: string;
+  caption?: string;
+  buttons?: WhaticketButton[];
+  footer?: string;
+}
+
+export interface WhaticketCheckNumberResult {
+  existsInWhatsapp: boolean;
+  number: string;
+  numberFormatted?: string;
 }
 
 export interface OpaDepartment {

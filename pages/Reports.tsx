@@ -48,7 +48,7 @@ import {
   PieChart,
   Pie
 } from 'recharts';
-import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, OpaTemplate, OpaChannel, OpaDepartment, OpaUser } from '../types';
+import { Technician, Company, ServiceOrder, ScoreRule, OsPenalty, User as SystemUser, WhaticketButton, WhaticketCheckNumberResult } from '../types';
 
 interface ReportFilter {
   startDate: string;
@@ -221,28 +221,30 @@ export const Reports: React.FC = () => {
   const [isSavingAssignment, setIsSavingAssignment] = useState(false);
   const [assignmentToast, setAssignmentToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Integração Opa! Suite (Enviar Solicitação / Template)
-  const [isOpaModalOpen, setIsOpaModalOpen] = useState(false);
-  const [opaTargetOs, setOpaTargetOs] = useState<SubjectReportRow | null>(null);
-  const [opaTemplatesList, setOpaTemplatesList] = useState<OpaTemplate[]>([]);
-  const [isLoadingOpaTemplates, setIsLoadingOpaTemplates] = useState<boolean>(false);
-  const [selectedOpaTemplateId, setSelectedOpaTemplateId] = useState<string>('');
-  const [templateVariables, setTemplateVariables] = useState<Record<string, string>>({});
-  const [opaChannelsList, setOpaChannelsList] = useState<OpaChannel[]>([]);
-  const [isLoadingOpaChannels, setIsLoadingOpaChannels] = useState<boolean>(false);
-  const [opaCanalId, setOpaCanalId] = useState<string>('');
-  const [opaDepartmentsList, setOpaDepartmentsList] = useState<OpaDepartment[]>([]);
-  const [isLoadingOpaDepartments, setIsLoadingOpaDepartments] = useState<boolean>(false);
-  const [opaDepartamentoId, setOpaDepartamentoId] = useState<string>('');
-  const [opaUsersList, setOpaUsersList] = useState<OpaUser[]>([]);
-  const [isLoadingOpaUsers, setIsLoadingOpaUsers] = useState<boolean>(false);
-  const [selectedOpaAttendantId, setSelectedOpaAttendantId] = useState<string>('');
-  const [opaClientPhone, setOpaClientPhone] = useState<string>('');
-  const [opaClientName, setOpaClientName] = useState<string>('');
-  const [opaClientCpf, setOpaClientCpf] = useState<string>('');
-  const [isSearchingOpaClient, setIsSearchingOpaClient] = useState(false);
-  const [isSendingOpa, setIsSendingOpa] = useState(false);
-  const [opaToast, setOpaToast] = useState<{ success: boolean; text: string } | null>(null);
+  // Integração Whaticket (WhatsApp)
+  const [isWhaticketModalOpen, setIsWhaticketModalOpen] = useState(false);
+  const [whaticketTargetOs, setWhaticketTargetOs] = useState<SubjectReportRow | null>(null);
+  const [whaticketClientPhone, setWhaticketClientPhone] = useState<string>('');
+  const [whaticketClientName, setWhaticketClientName] = useState<string>('');
+  const [whaticketClientCpf, setWhaticketClientCpf] = useState<string>('');
+  const [isSearchingClient, setIsSearchingClient] = useState(false);
+  const [whaticketMessageText, setWhaticketMessageText] = useState<string>('');
+  const [whaticketSendMode, setWhaticketSendMode] = useState<'noTicket' | 'ticket' | 'buttons'>('noTicket');
+  const [whaticketPreset, setWhaticketPreset] = useState<string>('abertura');
+  const [whaticketButtons, setWhaticketButtons] = useState<WhaticketButton[]>([
+    { text: 'Sim, confirmo a visita', id: '1' },
+    { text: 'Preciso reagendar', id: '2' },
+    { text: 'Falar com atendente', id: '3' }
+  ]);
+  const [whaticketFooter, setWhaticketFooter] = useState<string>('Unity Automações');
+  const [whaticketUserId, setWhaticketUserId] = useState<string>('');
+  const [whaticketQueueId, setWhaticketQueueId] = useState<string>('');
+  const [whaticketSendSignature, setWhaticketSendSignature] = useState<boolean>(false);
+  const [whaticketCloseTicket, setWhaticketCloseTicket] = useState<boolean>(false);
+  const [isCheckingWhaticketNumber, setIsCheckingWhaticketNumber] = useState<boolean>(false);
+  const [whaticketNumberStatus, setWhaticketNumberStatus] = useState<WhaticketCheckNumberResult | null>(null);
+  const [isSendingWhaticket, setIsSendingWhaticket] = useState(false);
+  const [whaticketToast, setWhaticketToast] = useState<{ success: boolean; text: string } | null>(null);
 
   const isEmployeeUser = currentUser?.role === 'employee';
   const canAssignOS = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || Boolean(currentUser?.permissions?.canAssignOS);
@@ -442,154 +444,32 @@ export const Reports: React.FC = () => {
       return {};
   };
 
-  const fetchOpaTemplatesList = async (companyId?: string, canalId?: string) => {
-      setIsLoadingOpaTemplates(true);
-      try {
-          const config = getApiConfig();
-          const cid = companyId || config?.id;
-          if (!cid) return [];
-          const targetCanal = canalId || opaCanalId;
-          const canalQuery = targetCanal ? `&canalId=${encodeURIComponent(targetCanal)}` : '';
-          const res = await fetch(`/api/opasuite/templates?companyId=${cid}${canalQuery}`);
-          if (res.ok) {
-              const data = await res.json();
-              const list: OpaTemplate[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-              setOpaTemplatesList(list);
-              if (list.length > 0) {
-                  setSelectedOpaTemplateId(current => {
-                      if (current && list.some(t => t._id === current)) return current;
-                      return list[0]._id;
-                  });
-              } else {
-                  setSelectedOpaTemplateId('');
-              }
-              return list;
-          }
-      } catch (e) {
-          console.warn("Erro ao carregar templates do Opa! Suite:", e);
-      } finally {
-          setIsLoadingOpaTemplates(false);
-      }
-      return [];
+  const formatWhaticketPhone = (input: string): string => {
+    const clean = input.replace(/\D/g, '');
+    if (!clean) return '';
+    if (clean.startsWith('55')) return clean;
+    return `55${clean}`;
   };
 
-  const fetchOpaDepartmentsList = async (companyId?: string) => {
-      setIsLoadingOpaDepartments(true);
-      try {
-          const config = getApiConfig();
-          const cid = companyId || config?.id;
-          if (!cid) return [];
-          const res = await fetch(`/api/opasuite/departamentos?companyId=${cid}`);
-          if (res.ok) {
-              const data = await res.json();
-              const list: OpaDepartment[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-              setOpaDepartmentsList(list);
-              return list;
-          }
-      } catch (e) {
-          console.warn("Erro ao carregar departamentos do Opa! Suite:", e);
-      } finally {
-          setIsLoadingOpaDepartments(false);
-      }
-      return [];
-  };
+  const getWhaticketPresetTemplate = (preset: string, row?: SubjectReportRow | null, clientName?: string) => {
+    const target = row || whaticketTargetOs;
+    const client = clientName || whaticketClientName || 'Cliente';
+    const osId = target?.osId || '0000';
+    const servico = target?.subjectTitle || 'Suporte Técnico';
+    const tecnico = target?.technicianName || 'Técnico Especializado';
 
-  const selectedOpaTemplate = useMemo(() => {
-      return opaTemplatesList.find(t => t._id === selectedOpaTemplateId) || null;
-  }, [opaTemplatesList, selectedOpaTemplateId]);
-
-  const detectedOpaVariables = useMemo(() => {
-      if (!selectedOpaTemplate?.texto) return [];
-      const matches = selectedOpaTemplate.texto.match(/\{\{([^}]+)\}\}/g);
-      if (!matches) return [];
-      return Array.from(new Set(matches.map(m => m.replace(/[{}]/g, '').trim())));
-  }, [selectedOpaTemplate]);
-
-  useEffect(() => {
-      if (detectedOpaVariables.length > 0) {
-          const initial: Record<string, string> = {};
-          detectedOpaVariables.forEach((v) => {
-              const lower = v.toLowerCase();
-              if (lower.includes('nome') || lower.includes('user') || lower.includes('cliente') || v === '1') {
-                  initial[v] = opaClientName || 'Cliente';
-              } else if (lower.includes('protocolo') || lower.includes('os') || lower.includes('ordem') || v === '2') {
-                  initial[v] = opaTargetOs?.osId || '';
-              } else {
-                  initial[v] = '';
-              }
-          });
-          setTemplateVariables(initial);
-      } else {
-          setTemplateVariables({});
-      }
-  }, [selectedOpaTemplateId, opaTargetOs, opaClientName, detectedOpaVariables]);
-
-  const renderedOpaMessage = useMemo(() => {
-      if (!selectedOpaTemplate?.texto) return '';
-      let msg = selectedOpaTemplate.texto;
-      detectedOpaVariables.forEach(v => {
-          const val = templateVariables[v] !== undefined && templateVariables[v] !== '' ? templateVariables[v] : `{{${v}}}`;
-          msg = msg.split(`{{${v}}}`).join(val);
-      });
-      return msg;
-  }, [selectedOpaTemplate, detectedOpaVariables, templateVariables]);
-
-  const fetchOpaChannelsList = async (companyId?: string) => {
-      setIsLoadingOpaChannels(true);
-      try {
-          const config = getApiConfig();
-          const cid = companyId || config?.id;
-          if (!cid) return [];
-          const res = await fetch(`/api/opasuite/canais?companyId=${cid}&canal=Whatsapp`);
-          if (res.ok) {
-              const data = await res.json();
-              const list: OpaChannel[] = Array.isArray(data) ? data : (data.data || data.registros || []);
-              setOpaChannelsList(list);
-              // Pré-seleciona o canal WhatsApp automaticamente
-              if (list.length > 0) {
-                  let chosenId = '';
-                  setOpaCanalId(currentId => {
-                      if (currentId && list.some(c => c._id === currentId)) {
-                          chosenId = currentId;
-                          return currentId;
-                      }
-                      const active = list.find(c => c.status === 'A') || list[0];
-                      chosenId = active._id;
-                      return active._id;
-                  });
-                  if (chosenId) {
-                      fetchOpaTemplatesList(cid, chosenId);
-                  }
-              }
-              return list;
-          }
-      } catch (e) {
-          console.warn("Erro ao carregar canais do Opa! Suite:", e);
-      } finally {
-          setIsLoadingOpaChannels(false);
-      }
-      return [];
-  };
-
-  const fetchOpaUsersList = async (companyId?: string) => {
-      setIsLoadingOpaUsers(true);
-      try {
-          const config = getApiConfig();
-          const cid = companyId || config?.id;
-          if (!cid) return [];
-          const res = await fetch(`/api/opasuite/usuarios?companyId=${cid}`);
-          if (res.ok) {
-              const data = await res.json();
-              const list: OpaUser[] = Array.isArray(data) ? data : (data.data && Array.isArray(data.data) ? data.data : []);
-              setOpaUsersList(list);
-              return list;
-          }
-      } catch (e) {
-          console.warn("Erro ao buscar atendentes do Opa! Suite:", e);
-      } finally {
-          setIsLoadingOpaUsers(false);
-      }
-      return [];
+    switch (preset) {
+      case 'abertura':
+        return `Olá, ${client}! 👋\n\nInformamos que sua Ordem de Serviço *#${osId}* (*${servico}*) foi registrada com sucesso em nosso sistema.\n\nNossa equipe técnica já está acompanhando o caso. Qualquer dúvida, estamos à disposição!`;
+      case 'caminho':
+        return `Olá, ${client}! 🚗💨\n\nO técnico *${tecnico}* da nossa equipe já está a caminho para realizar o atendimento da O.S. *#${osId}* no seu endereço.\n\nPor favor, certifique-se de que haverá alguém responsável no local para nos receber.`;
+      case 'concluida':
+        return `Olá, ${client}! ✅\n\nO atendimento da sua Ordem de Serviço *#${osId}* (*${servico}*) foi finalizado com sucesso pelo técnico *${tecnico}*.\n\nSeus serviços já se encontram restabelecidos. Agradecemos pela confiança e preferência! Tenha um ótimo dia!`;
+      case 'botoes':
+        return `Olá, ${client}! 👋\n\nConfirmamos a visita técnica referente à sua Ordem de Serviço *#${osId}* (*${servico}*).\n\nVocê confirma que haverá alguém responsável no endereço no horário agendado?`;
+      default:
+        return `Olá, ${client}! Entramos em contato referente à sua Ordem de Serviço *#${osId}* (*${servico}*).`;
+    }
   };
 
   const handleOpenAssignModal = (osIds: string[]) => {
@@ -672,10 +552,11 @@ export const Reports: React.FC = () => {
       }
   };
 
-  const handleOpenOpaModal = async (row: SubjectReportRow) => {
-      setOpaTargetOs(row);
-      setOpaToast(null);
-      setIsOpaModalOpen(true);
+  const handleOpenWhaticketModal = async (row: SubjectReportRow) => {
+      setWhaticketTargetOs(row);
+      setWhaticketToast(null);
+      setWhaticketNumberStatus(null);
+      setIsWhaticketModalOpen(true);
 
       const config = getApiConfig();
       let clientPhone = '';
@@ -683,7 +564,7 @@ export const Reports: React.FC = () => {
       let clientCpf = '';
 
       if (config && row.clientId) {
-          setIsSearchingOpaClient(true);
+          setIsSearchingClient(true);
           try {
               const clientRes = await safeFetch(buildUrl(config, '/webservice/v1/cliente'), {
                   method: 'POST',
@@ -704,117 +585,154 @@ export const Reports: React.FC = () => {
           } catch (e) {
               console.warn("Erro ao buscar dados do cliente no IXC:", e);
           } finally {
-              setIsSearchingOpaClient(false);
+              setIsSearchingClient(false);
           }
       }
 
-      setOpaClientName(clientName);
-      setOpaClientPhone(clientPhone);
-      setOpaClientCpf(clientCpf);
+      const formattedPhone = formatWhaticketPhone(clientPhone);
+      setWhaticketClientName(clientName);
+      setWhaticketClientPhone(formattedPhone);
+      setWhaticketClientCpf(clientCpf);
 
-      let initialCanalId = '';
+      // Carregar preferências da empresa
       const savedCompany = localStorage.getItem('unity_company_data');
       if (savedCompany) {
           try {
               const comp = JSON.parse(savedCompany);
-              if (comp.opaSuiteCanalId) {
-                  initialCanalId = comp.opaSuiteCanalId;
-                  setOpaCanalId(comp.opaSuiteCanalId);
+              if (comp.whaticketFastSend !== undefined) {
+                  setWhaticketSendMode(comp.whaticketFastSend ? 'noTicket' : 'ticket');
               }
-              if (comp.opaSuiteDefaultTemplateId) setSelectedOpaTemplateId(comp.opaSuiteDefaultTemplateId);
-              if (comp.opaSuiteDefaultDepartmentId) setOpaDepartamentoId(comp.opaSuiteDefaultDepartmentId);
+              if (comp.whaticketDefaultQueueId) setWhaticketQueueId(comp.whaticketDefaultQueueId);
+              if (comp.whaticketDefaultUserId) setWhaticketUserId(comp.whaticketDefaultUserId);
+              if (comp.whaticketSendSignature !== undefined) setWhaticketSendSignature(Boolean(comp.whaticketSendSignature));
+              if (comp.whaticketCloseTicket !== undefined) setWhaticketCloseTicket(Boolean(comp.whaticketCloseTicket));
           } catch (e) {}
       }
 
-      if (config) {
-          fetchOpaChannelsList(config.id);
-          fetchOpaDepartmentsList(config.id);
-          fetchOpaUsersList(config.id);
-          fetchOpaTemplatesList(config.id, initialCanalId);
+      // Se o usuário logado possui atendente vinculado ao Whaticket
+      if (currentUser?.whaticketUserId) {
+          setWhaticketUserId(currentUser.whaticketUserId);
       }
 
-      // Pré-selecionar atendente vinculado se o usuário logado tiver
-      if (currentUser?.opaUserId) {
-          setSelectedOpaAttendantId(currentUser.opaUserId);
-      } else {
-          setSelectedOpaAttendantId('');
-      }
+      // Mensagem inicial padrão
+      const initialMsg = getWhaticketPresetTemplate('abertura', row, clientName);
+      setWhaticketPreset('abertura');
+      setWhaticketMessageText(initialMsg);
   };
 
-  const handleSendOpaTemplate = async () => {
-      if (!selectedOpaTemplateId) {
-          setOpaToast({ success: false, text: 'Selecione um template do Opa! Suite para enviar.' });
-          return;
+  const handleSelectPreset = (preset: string) => {
+      setWhaticketPreset(preset);
+      if (preset === 'botoes') {
+          setWhaticketSendMode('buttons');
       }
-      if (!opaClientPhone || opaClientPhone.replace(/\D/g, '').length < 8) {
-          setOpaToast({ success: false, text: 'Informe um telefone/WhatsApp válido com DDD.' });
+      const msg = getWhaticketPresetTemplate(preset, whaticketTargetOs, whaticketClientName);
+      setWhaticketMessageText(msg);
+  };
+
+  const handleCheckWhaticketNumber = async () => {
+      const clean = formatWhaticketPhone(whaticketClientPhone);
+      if (!clean || clean.length < 8) {
+          setWhaticketToast({ success: false, text: 'Informe um número com DDD para consultar no WhatsApp.' });
           return;
       }
 
       const config = getApiConfig();
       if (!config) return;
 
-      setIsSendingOpa(true);
-      setOpaToast(null);
+      setIsCheckingWhaticketNumber(true);
+      setWhaticketNumberStatus(null);
 
       try {
-          const rawDigits = opaClientPhone.replace(/\D/g, '');
-          const phoneWithCountry = rawDigits.startsWith('55') ? rawDigits : `55${rawDigits}`;
-          const canalCliente = `+${phoneWithCountry}`;
+          const res = await fetch('/api/whaticket/check-number', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  companyId: config.id,
+                  number: clean
+              })
+          });
 
-          // Formata variáveis se o template exigir
-          const templateVarsArray = detectedOpaVariables.length > 0 
-              ? detectedOpaVariables.map(v => templateVariables[v] !== undefined ? templateVariables[v] : '')
-              : [];
+          const data = await res.json();
+          if (res.ok && data) {
+              setWhaticketNumberStatus(data);
+          } else {
+              setWhaticketToast({ success: false, text: data.error || data.message || 'Erro ao validar número no WhatsApp.' });
+          }
+      } catch (e: any) {
+          setWhaticketToast({ success: false, text: e.message || 'Erro de conexão.' });
+      } finally {
+          setIsCheckingWhaticketNumber(false);
+      }
+  };
 
-          const payload = {
+  const handleSendWhaticketMessage = async () => {
+      const clean = formatWhaticketPhone(whaticketClientPhone);
+      if (!clean || clean.length < 8) {
+          setWhaticketToast({ success: false, text: 'Informe um telefone/WhatsApp válido (ex: 5511999998888).' });
+          return;
+      }
+      if (!whaticketMessageText.trim()) {
+          setWhaticketToast({ success: false, text: 'Digite o conteúdo da mensagem antes de enviar.' });
+          return;
+      }
+
+      const config = getApiConfig();
+      if (!config) return;
+
+      setIsSendingWhaticket(true);
+      setWhaticketToast(null);
+
+      try {
+          const isFastSend = whaticketSendMode === 'noTicket';
+          const isButtons = whaticketSendMode === 'buttons';
+
+          const payload: any = {
               companyId: config.id,
-              canal: opaCanalId || undefined,
-              departamento: opaDepartamentoId || undefined,
-              atendente: selectedOpaAttendantId || currentUser?.opaUserId || undefined,
-              contato: {
-                  canalCliente: canalCliente,
-                  nome: opaClientName || (opaTargetOs ? `Cliente #${opaTargetOs.clientId}` : 'Cliente'),
-                  cpf_cnpj: opaClientCpf || undefined
-              },
-              template: {
-                  _id: selectedOpaTemplateId,
-                  ...(templateVarsArray.length > 0 ? { variaveis: templateVarsArray } : {})
-              },
-              allowSendingToStartedCustomerService: true
+              number: clean,
+              body: whaticketMessageText,
+              fastSend: isFastSend,
+              userId: whaticketUserId || undefined,
+              queueId: whaticketQueueId || undefined,
+              sendSignature: whaticketSendSignature,
+              closeTicket: whaticketCloseTicket
           };
 
-          const res = await fetch('/api/opasuite/send-template', {
+          if (isButtons) {
+              payload.buttons = whaticketButtons;
+              payload.footer = whaticketFooter;
+              payload.type = 'buttons';
+          }
+
+          const res = await fetch('/api/whaticket/send-message', {
               method: 'POST',
               headers: {
-                  'Content-Type': 'application/json',
-                  'x-company-id': config.id
+                  'Content-Type': 'application/json'
               },
               body: JSON.stringify(payload)
           });
 
           const data = await res.json();
-          if (res.ok && (data.success || data.protocolo || data._id || data.id || !data.error)) {
-              setOpaToast({
+          if (res.ok && (data.status === 'SUCCESS' || data.id || data.message || !data.error)) {
+              setWhaticketToast({
                   success: true,
-                  text: 'Solicitação e template enviados com sucesso ao WhatsApp do cliente!'
+                  text: `Mensagem enviada com sucesso para o WhatsApp ${clean}!`
               });
               setTimeout(() => {
-                  setIsOpaModalOpen(false);
+                  setIsWhaticketModalOpen(false);
               }, 1800);
           } else {
-              setOpaToast({
+              setWhaticketToast({
                   success: false,
-                  text: `Erro ao enviar: ${data.error || data.message || 'Verifique se o canal WhatsApp e o template estão ativos no Opa! Suite.'}`
+                  text: `Erro ao enviar: ${data.error || data.message || 'Verifique a conexão do Whaticket em Configurações da Empresa.'}`
               });
           }
       } catch (e: any) {
-          setOpaToast({
+          setWhaticketToast({
               success: false,
               text: `Falha na requisição: ${e.message || 'Erro de conexão'}`
           });
       } finally {
-          setIsSendingOpa(false);
+          setIsSendingWhaticket(false);
       }
   };
 
@@ -3344,16 +3262,15 @@ export const Reports: React.FC = () => {
                                   )
                                 )}
 
-                                {/* Botão Enviar Solicitação para Opa! Suite */}
+                                {/* Botão Enviar WhatsApp via Whaticket */}
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenOpaModal(row)}
-                                  title="Enviar Solicitação / Template para o cliente via Opa! Suite"
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors shadow-2xs shrink-0"
+                                  onClick={() => handleOpenWhaticketModal(row)}
+                                  title="Enviar mensagem / notificação via Whaticket (WhatsApp)"
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 transition-colors shadow-2xs shrink-0"
                                 >
-                                  <Send size={11} className="text-brand-600 shrink-0" />
-                                  <span>Enviar</span>
-                                  <span className="hidden xl:inline">Solicitação</span>
+                                  <MessageSquare size={12} className="text-emerald-600 shrink-0" />
+                                  <span>WhatsApp</span>
                                 </button>
                               </div>
                             </td>
@@ -3644,342 +3561,409 @@ export const Reports: React.FC = () => {
             </div>
           )}
 
-          {/* Modal Enviar Solicitação para Opa! Suite */}
-          {isOpaModalOpen && opaTargetOs && (
+          {/* Modal Enviar Mensagem via Whaticket (WhatsApp) */}
+          {isWhaticketModalOpen && whaticketTargetOs && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 no-print">
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in duration-150">
-                <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                  <div className="flex items-center gap-2">
-                    <Send className="text-brand-600" size={18} />
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in duration-150 flex flex-col max-h-[90vh]">
+                {/* Modal Header */}
+                <div className="px-5 py-3.5 border-b border-gray-200 flex justify-between items-center bg-slate-50">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600">
+                      <MessageSquare size={18} />
+                    </div>
                     <div>
-                      <h3 className="font-bold text-gray-900 text-sm">Enviar Solicitação • Opa! Suite</h3>
-                      <span className="text-xs text-gray-500">Ordem de Serviço #{opaTargetOs.osId}</span>
+                      <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                        <span>Disparo WhatsApp • Whaticket</span>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold border border-emerald-300">
+                          API Chat
+                        </span>
+                      </h3>
+                      <span className="text-xs text-gray-500 font-mono">
+                        OS #{whaticketTargetOs.osId} • {whaticketTargetOs.subjectTitle}
+                      </span>
                     </div>
                   </div>
                   <button 
                     type="button"
-                    onClick={() => setIsOpaModalOpen(false)} 
-                    className="text-gray-400 hover:text-gray-600"
+                    onClick={() => setIsWhaticketModalOpen(false)} 
+                    className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"
                   >
                     <X size={18} />
                   </button>
                 </div>
 
-                <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
-                  {/* Dados do Cliente */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2 text-xs">
+                {/* Modal Body */}
+                <div className="p-5 space-y-4 overflow-y-auto flex-1">
+                  
+                  {/* Dados do Cliente & Telefone */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3 text-xs">
                     <div className="flex justify-between items-center">
-                      <span className="font-bold text-slate-800">Dados do Contato (IXC)</span>
-                      {isSearchingOpaClient && (
+                      <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <User size={13} className="text-slate-500" />
+                        Contato do Cliente (IXC)
+                      </span>
+                      {isSearchingClient && (
                         <span className="text-brand-600 flex items-center gap-1 text-[11px]">
                           <Loader2 size={12} className="animate-spin" /> Buscando no IXC...
                         </span>
                       )}
                     </div>
-                    <div>
-                      <label className="block text-slate-500 text-[11px] mb-0.5">Nome do Cliente</label>
-                      <input
-                        type="text"
-                        value={opaClientName}
-                        onChange={e => setOpaClientName(e.target.value)}
-                        className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-slate-500 text-[11px] mb-0.5">WhatsApp / Celular (com DDD)</label>
+                        <label className="block text-slate-600 text-[11px] font-medium mb-1">Nome do Cliente</label>
                         <input
                           type="text"
-                          placeholder="Ex: 11999998888"
-                          value={opaClientPhone}
-                          onChange={e => setOpaClientPhone(e.target.value)}
-                          className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                          value={whaticketClientName}
+                          onChange={e => setWhaticketClientName(e.target.value)}
+                          className="w-full rounded-lg border-gray-300 border p-2 text-xs bg-white text-gray-800"
                         />
                       </div>
+
                       <div>
-                        <label className="block text-slate-500 text-[11px] mb-0.5">CPF / CNPJ</label>
-                        <input
-                          type="text"
-                          value={opaClientCpf}
-                          onChange={e => setOpaClientCpf(e.target.value)}
-                          className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
-                        />
+                        <label className="block text-slate-600 text-[11px] font-medium mb-1">
+                          Telefone / WhatsApp (somente números com DDD)
+                        </label>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="5511999998888"
+                            value={whaticketClientPhone}
+                            onChange={e => {
+                              setWhaticketClientPhone(e.target.value);
+                              setWhaticketNumberStatus(null);
+                            }}
+                            className="flex-1 rounded-lg border-gray-300 border p-2 text-xs bg-white font-mono text-gray-800"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleCheckWhaticketNumber}
+                            disabled={isCheckingWhaticketNumber || !whaticketClientPhone}
+                            title="Validar se este número possui WhatsApp ativo no Whaticket"
+                            className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg disabled:opacity-50 transition-colors flex items-center gap-1 shrink-0"
+                          >
+                            {isCheckingWhaticketNumber ? <Loader2 size={12} className="animate-spin" /> : <BadgeCheck size={13} />}
+                            <span className="hidden sm:inline">Verificar</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Escolha do Template */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
-                        <span>Template de Mensagem (Opa! Suite)</span>
-                        {isLoadingOpaTemplates && (
-                          <span className="text-[11px] text-brand-600 flex items-center gap-1 font-normal">
-                            <Loader2 size={12} className="animate-spin" /> Carregando...
-                          </span>
-                        )}
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const config = getApiConfig();
-                          if (config) fetchOpaTemplatesList(config.id, opaCanalId);
-                        }}
-                        disabled={isLoadingOpaTemplates}
-                        className="text-[11px] text-brand-600 hover:text-brand-800 flex items-center gap-1 font-medium disabled:opacity-50"
-                      >
-                        <RefreshCw size={11} className={isLoadingOpaTemplates ? "animate-spin" : ""} /> Atualizar Lista
-                      </button>
-                    </div>
-
-                    <select
-                      value={selectedOpaTemplateId}
-                      onChange={e => setSelectedOpaTemplateId(e.target.value)}
-                      disabled={isLoadingOpaTemplates}
-                      className="w-full rounded-lg border-gray-300 border p-2.5 text-xs focus:ring-brand-500 focus:border-brand-500 bg-white"
-                    >
-                      <option value="">Selecione um template cadastrado...</option>
-                      {opaTemplatesList.map(t => (
-                        <option key={t._id} value={t._id}>
-                          {t.atalho ? `[/${t.atalho}] ` : ''}{t.texto ? (t.texto.length > 70 ? t.texto.substring(0, 70) + '...' : t.texto) : (t.nome || t._id)}
-                        </option>
-                      ))}
-                    </select>
-
-                    {opaTemplatesList.length === 0 && !isLoadingOpaTemplates && (
-                      <p className="text-[11px] text-amber-600 bg-amber-50 p-2 rounded border border-amber-200">
-                        Nenhum template retornado. Verifique a URL e Token nas Configurações da Empresa ou clique em "Atualizar Lista".
-                      </p>
+                    {/* Status de verificação do número no WhatsApp */}
+                    {whaticketNumberStatus && (
+                      <div className={`p-2 rounded-lg border text-[11px] font-medium flex items-center gap-1.5 ${
+                        whaticketNumberStatus.existsInWhatsapp 
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                          : 'bg-amber-50 text-amber-800 border-amber-200'
+                      }`}>
+                        {whaticketNumberStatus.existsInWhatsapp ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                        <span>
+                          {whaticketNumberStatus.existsInWhatsapp 
+                            ? `WhatsApp Ativo: ${whaticketNumberStatus.numberFormatted || whaticketNumberStatus.number}` 
+                            : `Número ${whaticketNumberStatus.number} não localizado no WhatsApp.`}
+                        </span>
+                      </div>
                     )}
                   </div>
 
-                  {/* Variáveis Dinâmicas do Template (se houver) */}
-                  {selectedOpaTemplateId && detectedOpaVariables.length > 0 && (
-                    <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-amber-900">Variáveis do Template (WhatsApp)</span>
-                        <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-mono">
-                          {detectedOpaVariables.length} campo(s)
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {detectedOpaVariables.map((v) => (
-                          <div key={v}>
-                            <label className="block text-[11px] font-semibold text-amber-800 mb-0.5 font-mono">
-                              {"{{" + v + "}}"}
-                            </label>
+                  {/* Modelos / Presets Rápidos de Mensagem */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                      Modelos Pré-definidos de O.S.
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { id: 'abertura', label: 'Abertura de O.S.' },
+                        { id: 'caminho', label: 'Técnico a Caminho' },
+                        { id: 'concluida', label: 'O.S. Concluída' },
+                        { id: 'botoes', label: 'Confirmação com Botões' },
+                        { id: 'custom', label: 'Personalizado' }
+                      ].map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleSelectPreset(p.id)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                            whaticketPreset === p.id 
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs' 
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Modo de Envio */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                    <label className="block text-xs font-bold text-slate-800">Modo de Envio do Whaticket</label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
+                        whaticketSendMode === 'noTicket' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="whaticketMode"
+                          checked={whaticketSendMode === 'noTicket'}
+                          onChange={() => setWhaticketSendMode('noTicket')}
+                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <span className="block">Sem Ticket (Rápido)</span>
+                          <span className="text-[10px] text-slate-500 font-normal">Dispara direto sem abrir chamado</span>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
+                        whaticketSendMode === 'ticket' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="whaticketMode"
+                          checked={whaticketSendMode === 'ticket'}
+                          onChange={() => setWhaticketSendMode('ticket')}
+                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <span className="block">Com Ticket</span>
+                          <span className="text-[10px] text-slate-500 font-normal">Registra no painel com fila/atendente</span>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
+                        whaticketSendMode === 'buttons' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="whaticketMode"
+                          checked={whaticketSendMode === 'buttons'}
+                          onChange={() => setWhaticketSendMode('buttons')}
+                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <span className="block">Com Botões</span>
+                          <span className="text-[10px] text-slate-500 font-normal">Opções interativas para o cliente</span>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Opções extras para Modo com Ticket */}
+                    {whaticketSendMode === 'ticket' && (
+                      <div className="pt-2 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-600 mb-0.5">ID da Fila (queueId)</label>
+                          <input
+                            type="text"
+                            placeholder="Opcional"
+                            value={whaticketQueueId}
+                            onChange={e => setWhaticketQueueId(e.target.value)}
+                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-600 mb-0.5">ID do Atendente (userId)</label>
+                          <input
+                            type="text"
+                            placeholder="Opcional"
+                            value={whaticketUserId}
+                            onChange={e => setWhaticketUserId(e.target.value)}
+                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                          />
+                        </div>
+                        <div className="sm:col-span-2 flex items-center gap-4 pt-1">
+                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-700">
                             <input
-                              type="text"
-                              value={templateVariables[v] || ''}
-                              onChange={e => setTemplateVariables(prev => ({ ...prev, [v]: e.target.value }))}
-                              placeholder={`Valor para {{${v}}}`}
-                              className="w-full rounded border-amber-300 border p-1.5 text-xs bg-white text-gray-800"
+                              type="checkbox"
+                              checked={whaticketSendSignature}
+                              onChange={e => setWhaticketSendSignature(e.target.checked)}
+                              className="rounded border-gray-300 text-emerald-600"
                             />
+                            <span>Enviar Assinatura</span>
+                          </label>
+                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={whaticketCloseTicket}
+                              onChange={e => setWhaticketCloseTicket(e.target.checked)}
+                              className="rounded border-gray-300 text-emerald-600"
+                            />
+                            <span>Fechar Ticket ao enviar</span>
+                          </label>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Opções extras para Modo com Botões */}
+                    {whaticketSendMode === 'buttons' && (
+                      <div className="pt-2 border-t border-slate-200 space-y-2 text-xs">
+                        <span className="font-semibold text-slate-800 block text-[11px]">Botões Interativos:</span>
+                        <div className="space-y-1.5">
+                          {whaticketButtons.map((btn, idx) => (
+                            <div key={idx} className="flex gap-2 items-center">
+                              <input
+                                type="text"
+                                value={btn.text}
+                                onChange={e => {
+                                  const updated = [...whaticketButtons];
+                                  updated[idx] = { ...updated[idx], text: e.target.value };
+                                  setWhaticketButtons(updated);
+                                }}
+                                className="flex-1 rounded border-gray-300 border p-1.5 text-xs bg-white"
+                                placeholder={`Texto do botão ${idx + 1}`}
+                              />
+                              <input
+                                type="text"
+                                value={btn.id}
+                                onChange={e => {
+                                  const updated = [...whaticketButtons];
+                                  updated[idx] = { ...updated[idx], id: e.target.value };
+                                  setWhaticketButtons(updated);
+                                }}
+                                className="w-16 rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
+                                placeholder="ID"
+                              />
+                              {whaticketButtons.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setWhaticketButtons(whaticketButtons.filter((_, i) => i !== idx))}
+                                  className="text-red-500 hover:text-red-700 p-1"
+                                >
+                                  <X size={14} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          {whaticketButtons.length < 3 && (
+                            <button
+                              type="button"
+                              onClick={() => setWhaticketButtons([...whaticketButtons, { text: 'Nova Opção', id: String(whaticketButtons.length + 1) }])}
+                              className="text-xs text-emerald-700 font-semibold hover:underline"
+                            >
+                              + Adicionar outro botão
+                            </button>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Rodapé dos Botões (Footer)</label>
+                          <input
+                            type="text"
+                            value={whaticketFooter}
+                            onChange={e => setWhaticketFooter(e.target.value)}
+                            placeholder="Texto do rodapé"
+                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Campo de Texto da Mensagem */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-xs font-bold text-gray-700">Texto da Mensagem</label>
+                      <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                        <span>Variáveis rápidas:</span>
+                        <button
+                          type="button"
+                          onClick={() => setWhaticketMessageText(prev => `${prev} ${whaticketClientName || 'Cliente'}`)}
+                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-mono text-[10px]"
+                        >
+                          +cliente
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWhaticketMessageText(prev => `${prev} #${whaticketTargetOs?.osId}`)}
+                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-mono text-[10px]"
+                        >
+                          +os
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWhaticketMessageText(prev => `${prev} ${whaticketTargetOs?.technicianName || 'Técnico'}`)}
+                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-mono text-[10px]"
+                        >
+                          +tecnico
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      rows={5}
+                      value={whaticketMessageText}
+                      onChange={e => setWhaticketMessageText(e.target.value)}
+                      className="w-full rounded-xl border-gray-300 border p-3 text-xs focus:ring-emerald-500 focus:border-emerald-500 bg-white leading-relaxed font-sans"
+                      placeholder="Digite a mensagem que será enviada pelo WhatsApp..."
+                    />
+                  </div>
+
+                  {/* Pré-visualização Realista do WhatsApp */}
+                  <div className="bg-[#efeae2] p-3.5 rounded-xl border border-stone-300 shadow-2xs">
+                    <span className="block text-[10px] font-bold text-stone-600 mb-1.5 uppercase tracking-wider">
+                      Pré-visualização da Conversa (WhatsApp)
+                    </span>
+                    <div className="bg-white rounded-lg p-3 max-w-sm shadow-xs border border-stone-200 text-xs text-stone-900 space-y-1.5">
+                      <div className="whitespace-pre-wrap leading-relaxed text-slate-800">
+                        {whaticketMessageText || 'Sua mensagem aparecerá aqui...'}
+                      </div>
+                      
+                      {whaticketSendMode === 'buttons' && whaticketFooter && (
+                        <div className="text-[10px] text-stone-500 pt-1 border-t border-stone-100">
+                          {whaticketFooter}
+                        </div>
+                      )}
+
+                      <div className="flex justify-end items-center gap-1 text-[9px] text-stone-400">
+                        <span>Agora</span>
+                        <span className="text-emerald-500 font-bold">✓✓</span>
+                      </div>
+                    </div>
+
+                    {/* Botões do WhatsApp na Pré-visualização */}
+                    {whaticketSendMode === 'buttons' && whaticketButtons.length > 0 && (
+                      <div className="max-w-sm mt-1.5 space-y-1">
+                        {whaticketButtons.map((b, i) => (
+                          <div 
+                            key={i} 
+                            className="bg-white text-emerald-700 font-semibold text-center text-xs py-1.5 rounded-lg shadow-2xs border border-stone-200"
+                          >
+                            {b.text || `Opção ${i + 1}`}
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-
-                  {/* Pré-visualização do texto do Template com variáveis substituídas */}
-                  {selectedOpaTemplateId && (
-                    <div>
-                      <span className="block text-[11px] font-semibold text-gray-500 mb-1">Pré-visualização da Mensagem (WhatsApp):</span>
-                      <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg text-xs text-emerald-950 whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto font-sans">
-                        {renderedOpaMessage || 'Sem conteúdo'}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Canal de Comunicação e Departamento Opa! Suite */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Canal WhatsApp */}
-                    <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
-                          <MessageSquare className="text-emerald-600" size={15} />
-                          <span>Canal WhatsApp</span>
-                        </div>
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full border border-emerald-300 flex items-center gap-1">
-                          <CheckCircle2 size={10} className="text-emerald-600" /> WhatsApp
-                        </span>
-                      </div>
-
-                      {isLoadingOpaChannels ? (
-                        <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
-                          <Loader2 size={13} className="animate-spin text-emerald-600" />
-                          <span>Carregando canais WhatsApp...</span>
-                        </div>
-                      ) : opaChannelsList.length > 0 ? (
-                        <div className="space-y-1">
-                          <select
-                            value={opaCanalId}
-                            onChange={e => {
-                              const newCanal = e.target.value;
-                              setOpaCanalId(newCanal);
-                              const cfg = getApiConfig();
-                              fetchOpaTemplatesList(cfg?.id, newCanal);
-                            }}
-                            className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
-                          >
-                            {opaChannelsList.map(c => (
-                              <option key={c._id} value={c._id}>
-                                {c.nome || 'Canal WhatsApp'} {c.integracao ? `(${c.integracao})` : ''} {c.status === 'A' ? '• Ativo' : ''}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-[10px] text-emerald-700">
-                            Ao alterar o canal, os templates são recarregados para o canal selecionado.
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <input
-                            type="text"
-                            placeholder="ID do Canal WhatsApp"
-                            value={opaCanalId}
-                            onChange={e => {
-                              const newCanal = e.target.value;
-                              setOpaCanalId(newCanal);
-                              const cfg = getApiConfig();
-                              fetchOpaTemplatesList(cfg?.id, newCanal);
-                            }}
-                            className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Departamento Opa! Suite */}
-                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-gray-800">
-                          <Layers className="text-brand-600" size={15} />
-                          <span>Departamento (Opa!)</span>
-                        </div>
-                        {opaDepartmentsList.length > 0 && (
-                          <span className="text-[10px] text-gray-500">
-                            {opaDepartmentsList.length} encontrado(s)
-                          </span>
-                        )}
-                      </div>
-
-                      {isLoadingOpaDepartments ? (
-                        <div className="flex items-center gap-2 text-xs text-gray-600 py-1">
-                          <Loader2 size={13} className="animate-spin text-gray-500" />
-                          <span>Carregando departamentos...</span>
-                        </div>
-                      ) : opaDepartmentsList.length > 0 ? (
-                        <div className="space-y-1">
-                          <select
-                            value={opaDepartamentoId}
-                            onChange={e => setOpaDepartamentoId(e.target.value)}
-                            className="w-full rounded-lg border-gray-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-brand-500 focus:border-brand-500"
-                          >
-                            <option value="">Padrão da Empresa / Nenhum</option>
-                            {opaDepartmentsList.map(d => (
-                              <option key={d._id} value={d._id}>
-                                {d.nome} {d.status === 'A' ? '• Ativo' : ''}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-[10px] text-gray-500">
-                            Atendimento será direcionado a este departamento.
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <input
-                            type="text"
-                            placeholder="ID do Departamento (opcional)"
-                            value={opaDepartamentoId}
-                            onChange={e => setOpaDepartamentoId(e.target.value)}
-                            className="w-full rounded-lg border-gray-300 border bg-white p-2 text-xs font-mono"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Atendente Opa! Suite (WhatsApp) */}
-                  <div className="bg-emerald-50/50 border border-emerald-200 rounded-lg p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
-                        <UserCheck className="text-emerald-600" size={15} />
-                        <span>Atendente Opa! Suite (Vínculo WhatsApp)</span>
-                      </div>
-                      {selectedOpaAttendantId && (
-                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-medium border border-emerald-300">
-                          {currentUser?.opaUserId === selectedOpaAttendantId ? 'Seu Vínculo' : 'Atendente Definido'}
-                        </span>
-                      )}
-                    </div>
-
-                    {isLoadingOpaUsers ? (
-                      <div className="flex items-center gap-2 text-xs text-emerald-800 py-1">
-                        <Loader2 size={13} className="animate-spin text-emerald-600" />
-                        <span>Carregando atendentes...</span>
-                      </div>
-                    ) : opaUsersList.length > 0 ? (
-                      <div className="space-y-1">
-                        <select
-                          value={selectedOpaAttendantId}
-                          onChange={e => setSelectedOpaAttendantId(e.target.value)}
-                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-medium text-gray-800 focus:ring-emerald-500 focus:border-emerald-500"
-                        >
-                          <option value="">Nenhum atendente selecionado</option>
-                          {opaUsersList.map(u => (
-                            <option key={u._id} value={u._id}>
-                              {u.nome} {u.tipo ? `(${u.tipo === 'user' ? 'Usuário' : u.tipo})` : ''} {u.status === 'A' ? '• Ativo' : '• Inativo'}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="text-[10px] text-emerald-700">
-                          O atendimento iniciado no WhatsApp será atribuído a este usuário no Opa! Suite.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <input
-                          type="text"
-                          placeholder="ID do Atendente Opa! Suite (opcional)"
-                          value={selectedOpaAttendantId}
-                          onChange={e => setSelectedOpaAttendantId(e.target.value)}
-                          className="w-full rounded-lg border-emerald-300 border bg-white p-2 text-xs font-mono"
-                        />
-                        <p className="text-[10px] text-gray-500">
-                          Vincule o atendente no cadastro do usuário (Gerenciar Usuários) ou informe o ID.
-                        </p>
-                      </div>
                     )}
                   </div>
 
-                  {opaToast && (
+                  {/* Alerta de Feedback */}
+                  {whaticketToast && (
                     <div className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
-                      opaToast.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
+                      whaticketToast.success ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'
                     }`}>
-                      <CheckCircle2 size={16} />
-                      <span>{opaToast.text}</span>
+                      {whaticketToast.success ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                      <span>{whaticketToast.text}</span>
                     </div>
                   )}
+
                 </div>
 
-                <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-200 flex justify-end gap-2">
+                {/* Modal Footer */}
+                <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-200 flex justify-end gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={() => setIsOpaModalOpen(false)}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                    onClick={() => setIsWhaticketModalOpen(false)}
+                    className="px-4 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                   >
-                    Fechar
+                    Cancelar
                   </button>
                   <button
                     type="button"
-                    disabled={isSendingOpa || !selectedOpaTemplateId || !opaClientPhone}
-                    onClick={handleSendOpaTemplate}
-                    className="flex items-center gap-2 px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm"
+                    disabled={isSendingWhaticket || !whaticketMessageText.trim() || !whaticketClientPhone}
+                    onClick={handleSendWhaticketMessage}
+                    className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm"
                   >
-                    {isSendingOpa ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                    <span>Disparar Notificação</span>
+                    {isSendingWhaticket ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    <span>Enviar Mensagem no WhatsApp</span>
                   </button>
                 </div>
               </div>

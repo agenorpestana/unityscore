@@ -38,7 +38,8 @@ export const UserManagement: React.FC = () => {
     active: true,
     role: 'user',
     ixcEmployeeId: '',
-    opaUserId: ''
+    opaUserId: '',
+    whaticketUserId: ''
   });
 
   useEffect(() => {
@@ -152,6 +153,7 @@ export const UserManagement: React.FC = () => {
           password: '',
           ixcEmployeeId: user.ixcEmployeeId || '',
           opaUserId: user.opaUserId || '',
+          whaticketUserId: user.whaticketUserId || '',
           permissions: {
             canManageCompany: Boolean(user.permissions?.canManageCompany),
             canManageUsers: Boolean(user.permissions?.canManageUsers),
@@ -176,7 +178,8 @@ export const UserManagement: React.FC = () => {
         active: true,
         role: 'user',
         ixcEmployeeId: '',
-        opaUserId: ''
+        opaUserId: '',
+        whaticketUserId: ''
       });
     }
     setIsModalOpen(true);
@@ -363,9 +366,16 @@ export const UserManagement: React.FC = () => {
                     <div>
                       <p className="font-medium text-gray-900">{user.name}</p>
                       <p className="text-sm text-gray-500">{user.email}</p>
-                      {user.opaUserId && (
+                      {user.whaticketUserId && (
                         <div className="mt-1">
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            <MessageSquare size={11} /> Whaticket: #{user.whaticketUserId}
+                          </span>
+                        </div>
+                      )}
+                      {user.opaUserId && (
+                        <div className="mt-1">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                             <MessageSquare size={11} /> Opa: {opaUsersMap[user.opaUserId] || 'Atendente Vinculado'}
                           </span>
                         </div>
@@ -537,43 +547,20 @@ export const UserManagement: React.FC = () => {
                   />
                 </div>
 
-                {/* Vínculo Opa! Suite (Atendente WhatsApp) */}
-                <div className="bg-emerald-50/60 p-4 rounded-lg border border-emerald-200">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-sm font-bold text-emerald-900 flex items-center gap-2">
-                      <MessageSquare size={16} className="text-emerald-600" /> Atendente Opa! Suite (WhatsApp)
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => fetchOpaUsers()}
-                      disabled={loadingOpaUsers}
-                      title="Atualizar lista de atendentes do Opa! Suite"
-                      className="text-xs text-emerald-700 hover:text-emerald-800 flex items-center gap-1 font-medium px-2 py-0.5 rounded bg-emerald-100/70 hover:bg-emerald-100 transition-colors"
-                    >
-                      <RefreshCw size={12} className={loadingOpaUsers ? 'animate-spin' : ''} />
-                      {loadingOpaUsers ? 'Atualizando...' : 'Recarregar'}
-                    </button>
-                  </div>
-                  {loadingOpaUsers ? (
-                    <div className="flex items-center gap-2 text-sm text-emerald-700 py-2">
-                      <Loader2 className="animate-spin" size={14} /> Carregando lista de atendentes...
-                    </div>
-                  ) : (
-                    <select
-                      value={formData.opaUserId || ''}
-                      onChange={e => setFormData({ ...formData, opaUserId: e.target.value })}
-                      className="block w-full rounded-lg border-emerald-300 border p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 bg-white"
-                    >
-                      <option value="">Nenhum atendente vinculado</option>
-                      {opaUsers.map(u => (
-                        <option key={u._id} value={u._id}>
-                          {u.nome} {u.tipo ? `(${u.tipo === 'user' ? 'Usuário' : u.tipo})` : ''} {u.status === 'A' ? '• Ativo' : '• Inativo'}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                {/* Vínculo Whaticket (Atendente / Usuário WhatsApp) */}
+                <div className="bg-emerald-50/70 p-4 rounded-lg border border-emerald-200">
+                  <label className="text-sm font-bold text-emerald-900 flex items-center gap-2 mb-1.5">
+                    <MessageSquare size={16} className="text-emerald-600" /> ID do Atendente / Usuário Whaticket (WhatsApp)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.whaticketUserId || ''}
+                    onChange={e => setFormData({ ...formData, whaticketUserId: e.target.value })}
+                    placeholder="Ex: 5 (ID numérico do atendente no Whaticket)"
+                    className="block w-full rounded-lg border-emerald-300 border p-2.5 text-sm focus:border-emerald-500 focus:ring-emerald-500 bg-white font-mono"
+                  />
                   <p className="text-xs text-emerald-700 mt-2">
-                    Vincula este usuário ao seu atendente no Opa! Suite para disparo de notificações e templates no WhatsApp.
+                    Informe o ID do usuário no Whaticket (userId). Ao disparar mensagens com abertura de ticket, o chamado será atribuído a este atendente.
                   </p>
                 </div>
 
