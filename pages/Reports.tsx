@@ -830,15 +830,85 @@ export const Reports: React.FC = () => {
         updatePayload.id_resposta_padrao_finalizacao = respIdStr;
       }
 
-      // 3. Executa o PUT no IXC através do proxy seguro
-      const updateRes = await safeFetch(buildUrl(config, `/webservice/v1/su_oss_chamado/${osId}`), {
-        method: 'PUT',
-        headers: config.headers,
-        body: JSON.stringify(updatePayload)
-      });
+      // 3. Executa o fechamento oficial no IXC através do endpoint su_oss_chamado_fechar
+      const fecharPayload = {
+        id_chamado: String(osId),
+        id_tarefa_atual: String(baseRecord.id_wfl_tarefa || baseRecord.id_tarefa_atual || baseRecord.id_tarefa || ''),
+        eh_tarefa_decisao: String(baseRecord.eh_tarefa_decisao || ''),
+        sequencia_atual: String(baseRecord.sequencia_atual || ''),
+        proxima_sequencia_forcada: '',
+        finaliza_processo_aux: 'S',
+        gera_comissao_aux: String(baseRecord.gera_comissao || 'N'),
+        id_processo: String(baseRecord.id_wfl_param_os || baseRecord.id_processo || ''),
+        data_inicio: baseRecord.data_inicio && !String(baseRecord.data_inicio).startsWith('0000')
+          ? baseRecord.data_inicio
+          : (baseRecord.data_abertura && !String(baseRecord.data_abertura).startsWith('0000') ? baseRecord.data_abertura : finalDateStr),
+        data_final: finalDateStr,
+        id_resposta: finalizeResponseId ? String(finalizeResponseId) : (baseRecord.id_resposta ? String(baseRecord.id_resposta) : ''),
+        mensagem: finalizeResponseText.trim(),
+        id_tecnico: finalizeTechnicianId ? String(finalizeTechnicianId) : (baseRecord.id_tecnico ? String(baseRecord.id_tecnico) : ''),
+        id_equipe: String(baseRecord.id_equipe || ''),
+        gera_comissao: String(baseRecord.gera_comissao || 'N'),
+        status: 'F',
+        data: finalDateStr,
+        id_evento: String(baseRecord.id_evento || ''),
+        id_su_diagnostico: String(baseRecord.id_su_diagnostico || ''),
+        justificativa_sla_atrasado: '',
+        id_evento_status: '',
+        id_proxima_tarefa: '',
+        id_proxima_tarefa_aux: '',
+        latitude: String(baseRecord.latitude || ''),
+        longitude: String(baseRecord.longitude || ''),
+        gps_time: finalDateStr
+      };
 
-      if (updateRes && updateRes.type === 'error') {
-        throw new Error(updateRes.message || 'Erro retornado pela API do IXC ao finalizar a O.S.');
+      let fecharSucceeded = false;
+      let fecharError: string | null = null;
+
+      try {
+        const fecharRes = await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado_fechar'), {
+          method: 'POST',
+          headers: {
+            ...config.headers,
+            ixcsoft: 'none'
+          },
+          body: JSON.stringify(fecharPayload)
+        });
+
+        if (fecharRes && fecharRes.type === 'error') {
+          console.warn('Erro retornado por su_oss_chamado_fechar:', fecharRes.message);
+          fecharError = fecharRes.message;
+        } else {
+          fecharSucceeded = true;
+        }
+      } catch (fecharErr: any) {
+        console.warn('Falha ao chamar su_oss_chamado_fechar:', fecharErr);
+        fecharError = fecharErr.message;
+      }
+
+      // 3.1 Executa também o PUT direto em su_oss_chamado/${osId} para sincronizar atributos e status no banco do IXC
+      let putSucceeded = false;
+      let putError: string | null = null;
+      try {
+        const updateRes = await safeFetch(buildUrl(config, `/webservice/v1/su_oss_chamado/${osId}`), {
+          method: 'PUT',
+          headers: config.headers,
+          body: JSON.stringify(updatePayload)
+        });
+
+        if (updateRes && updateRes.type === 'error') {
+          putError = updateRes.message;
+        } else {
+          putSucceeded = true;
+        }
+      } catch (putErr: any) {
+        console.warn('Aviso no PUT direto em su_oss_chamado:', putErr);
+        putError = putErr.message;
+      }
+
+      // Se ambos os métodos falharam, avisa o usuário com o erro retornado
+      if (!fecharSucceeded && !putSucceeded) {
+        throw new Error(fecharError || putError || 'Erro retornado pela API do IXC ao fechar a O.S.');
       }
 
       // 3.1 Insere também na tabela de mensagens da O.S. (su_oss_chamado_mensagem)

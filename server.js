@@ -495,9 +495,15 @@ app.use('/api/ixc-proxy', async (req, res) => {
             'Content-Type': 'application/json'
         };
 
+        const isActionOrEndpointWithoutListar = 
+            req.headers['ixcsoft'] === 'none' ||
+            req.url.includes('_fechar') || 
+            req.url.includes('_mensagem') ||
+            req.url.includes('su_oss_chamado_fechar');
+
         if (req.headers['ixcsoft'] && req.headers['ixcsoft'] !== 'none') {
             proxyHeaders['ixcsoft'] = req.headers['ixcsoft'];
-        } else if (requestMethod === 'POST' && req.headers['ixcsoft'] !== 'none') {
+        } else if (requestMethod === 'POST' && !isActionOrEndpointWithoutListar) {
             proxyHeaders['ixcsoft'] = 'listar';
         }
 
