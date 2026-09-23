@@ -19,9 +19,39 @@ import {
   Radio, 
   Wifi, 
   Layers,
-  Sparkles
+  Sparkles,
+  FileText,
+  RotateCcw,
+  Tag
 } from 'lucide-react';
-import { Company, WhaticketConnection, WhaticketCheckNumberResult } from '../types';
+import { Company, WhaticketConnection, WhaticketCheckNumberResult, OsTemplatesConfig } from '../types';
+
+export const DEFAULT_OS_TEMPLATES: Record<string, { label: string; icon: string; description: string; defaultText: string }> = {
+  abertura: {
+    label: 'Abertura de O.S.',
+    icon: '📋',
+    description: 'Enviada quando a Ordem de Serviço é criada/registrada para notificar o cliente.',
+    defaultText: 'Olá, {cliente}! 👋\n\nInformamos que sua Ordem de Serviço *#{osId}* (*{servico}*) foi registrada com sucesso em nosso sistema.\n\nNossa equipe técnica já está acompanhando o caso. Qualquer dúvida, estamos à disposição!'
+  },
+  caminho: {
+    label: 'Técnico a Caminho',
+    icon: '🚗',
+    description: 'Enviada avisando o cliente que a equipe técnica está em deslocamento para o endereço.',
+    defaultText: 'Olá, {cliente}! 🚗💨\n\nO técnico *{tecnico}* da nossa equipe já está a caminho para realizar o atendimento da O.S. *#{osId}* no seu endereço.\n\nPor favor, certifique-se de que haverá alguém responsável no local para nos receber.'
+  },
+  concluida: {
+    label: 'O.S. Concluída',
+    icon: '✅',
+    description: 'Enviada após o encerramento do chamado confirmando a conclusão dos serviços.',
+    defaultText: 'Olá, {cliente}! ✅\n\nO atendimento da sua Ordem de Serviço *#{osId}* (*{servico}*) foi finalizado com sucesso pelo técnico *{tecnico}*.\n\nSeus serviços já se encontram restabelecidos. Agradecemos pela confiança e preferência! Tenha um ótimo dia!'
+  },
+  botoes: {
+    label: 'Confirmação / Agendamento',
+    icon: '💬',
+    description: 'Enviada para confirmar a presença do cliente ou agendar o horário da visita.',
+    defaultText: 'Olá, {cliente}! 👋\n\nConfirmamos a visita técnica referente à sua Ordem de Serviço *#{osId}* (*{servico}*).\n\nVocê confirma que haverá alguém responsável no endereço no horário agendado?'
+  }
+};
 
 export const CompanySettings: React.FC = () => {
   const [company, setCompany] = useState<Company>({
@@ -36,7 +66,7 @@ export const CompanySettings: React.FC = () => {
     whaticketUrl: 'https://apichat.unityautomacoes.com.br',
     whaticketToken: '',
     whaticketDefaultUserId: '',
-    whaticketDefaultQueueId: '',
+    whaticketDefaultQueueId: '8',
     whaticketSendSignature: false,
     whaticketCloseTicket: false,
     whaticketFastSend: true,
@@ -47,6 +77,15 @@ export const CompanySettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetching, setIsFetching] = useState(true);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
+
+  // Estados dos Modelos Pré-definidos de O.S.
+  const [osTemplates, setOsTemplates] = useState<Record<string, string>>({
+    abertura: DEFAULT_OS_TEMPLATES.abertura.defaultText,
+    caminho: DEFAULT_OS_TEMPLATES.caminho.defaultText,
+    concluida: DEFAULT_OS_TEMPLATES.concluida.defaultText,
+    botoes: DEFAULT_OS_TEMPLATES.botoes.defaultText
+  });
+  const [activeTemplateTab, setActiveTemplateTab] = useState<'abertura' | 'caminho' | 'concluida' | 'botoes'>('abertura');
 
   // Estados da Integração Whaticket
   const [showToken, setShowToken] = useState(false);
@@ -107,13 +146,26 @@ export const CompanySettings: React.FC = () => {
           whaticketUrl: data.whaticketUrl || localParsed?.whaticketUrl || 'https://apichat.unityautomacoes.com.br',
           whaticketToken: data.whaticketToken || localParsed?.whaticketToken || '',
           whaticketDefaultUserId: data.whaticketDefaultUserId || localParsed?.whaticketDefaultUserId || '',
-          whaticketDefaultQueueId: data.whaticketDefaultQueueId || localParsed?.whaticketDefaultQueueId || '',
+          whaticketDefaultQueueId: data.whaticketDefaultQueueId || localParsed?.whaticketDefaultQueueId || '8',
           whaticketSendSignature: data.whaticketSendSignature !== undefined ? Boolean(data.whaticketSendSignature) : Boolean(localParsed?.whaticketSendSignature),
           whaticketCloseTicket: data.whaticketCloseTicket !== undefined ? Boolean(data.whaticketCloseTicket) : Boolean(localParsed?.whaticketCloseTicket),
           whaticketFastSend: data.whaticketFastSend !== undefined ? (data.whaticketFastSend !== false) : (localParsed?.whaticketFastSend !== false)
         };
         setCompany(fullData);
-        localStorage.setItem('unity_company_data', JSON.stringify(fullData));
+
+        // Carrega modelos de OS customizados se existirem
+        if (data.osTemplates || localParsed?.osTemplates) {
+          const loadedTemplates = data.osTemplates || localParsed?.osTemplates;
+          setOsTemplates(prev => ({
+            ...prev,
+            ...loadedTemplates
+          }));
+        }
+
+        localStorage.setItem('unity_company_data', JSON.stringify({
+          ...fullData,
+          osTemplates: data.osTemplates || localParsed?.osTemplates || osTemplates
+        }));
 
         if (fullData.whaticketToken) {
           fetchConnections(fullData.id, fullData.whaticketUrl, fullData.whaticketToken);
@@ -311,16 +363,20 @@ export const CompanySettings: React.FC = () => {
     setMessage(null);
 
     try {
+      const companyToSave = {
+        ...company,
+        osTemplates
+      };
       const res = await fetch(`/api/companies/${company.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(company)
+        body: JSON.stringify(companyToSave)
       });
 
       if (!res.ok) throw new Error('Falha ao salvar');
 
-      localStorage.setItem('unity_company_data', JSON.stringify(company));
-      setMessage({ type: 'success', text: 'Dados da empresa e integração Whaticket salvos com sucesso!' });
+      localStorage.setItem('unity_company_data', JSON.stringify(companyToSave));
+      setMessage({ type: 'success', text: 'Dados da empresa, modelos de O.S. e integração Whaticket salvos com sucesso!' });
     } catch (e) {
       setMessage({ type: 'error', text: 'Erro ao salvar configurações.' });
     } finally {
@@ -871,6 +927,155 @@ export const CompanySettings: React.FC = () => {
                 )}
               </div>
 
+            </div>
+          </div>
+
+          <hr className="border-gray-200" />
+
+          {/* NOVA SEÇÃO: MODELOS PRÉ-DEFINIDOS DE O.S. (WHATSAPP) */}
+          <div className="pt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <FileText className="text-emerald-600" size={22} />
+                  Modelos Pré-definidos de O.S. (WhatsApp)
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Personalize os modelos de mensagens disparados aos clientes. Use as variáveis dinâmicas para preenchimento automático.
+                </p>
+              </div>
+            </div>
+
+            {/* Abas e Editor */}
+            <div className="border border-slate-200 rounded-2xl bg-white shadow-2xs overflow-hidden">
+              <div className="flex flex-wrap border-b border-slate-200 bg-slate-50/70 p-1.5 gap-1.5">
+                {(Object.keys(DEFAULT_OS_TEMPLATES) as Array<'abertura' | 'caminho' | 'concluida' | 'botoes'>).map((key) => {
+                  const item = DEFAULT_OS_TEMPLATES[key];
+                  const isActive = activeTemplateTab === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setActiveTemplateTab(key)}
+                      className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                        isActive
+                          ? 'bg-white text-emerald-900 shadow-2xs border border-slate-200 font-bold'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
+                      }`}
+                    >
+                      <span>{item.icon}</span>
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="p-5 space-y-4">
+                {/* Cabeçalho do Modelo Selecionado */}
+                <div className="flex items-start justify-between gap-4 bg-emerald-50/50 border border-emerald-100 rounded-xl p-3 text-xs text-emerald-900">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{DEFAULT_OS_TEMPLATES[activeTemplateTab].icon}</span>
+                    <div>
+                      <span className="font-bold block">{DEFAULT_OS_TEMPLATES[activeTemplateTab].label}</span>
+                      <span className="text-emerald-800/80 text-[11px]">{DEFAULT_OS_TEMPLATES[activeTemplateTab].description}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOsTemplates(prev => ({
+                        ...prev,
+                        [activeTemplateTab]: DEFAULT_OS_TEMPLATES[activeTemplateTab].defaultText
+                      }));
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shrink-0"
+                    title="Restaurar texto original deste modelo"
+                  >
+                    <RotateCcw size={12} />
+                    <span>Restaurar Padrão</span>
+                  </button>
+                </div>
+
+                {/* Variáveis / Tags Dinâmicas */}
+                <div>
+                  <div className="flex items-center gap-1.5 mb-1.5 text-xs text-slate-600 font-semibold">
+                    <Tag size={13} className="text-emerald-600" />
+                    <span>Inserir variáveis dinâmicas (clique para anexar ao texto):</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { tag: '{cliente}', label: 'Nome do Cliente' },
+                      { tag: '{osId}', label: 'Número da O.S.' },
+                      { tag: '{servico}', label: 'Assunto / Serviço' },
+                      { tag: '{tecnico}', label: 'Nome do Técnico' }
+                    ].map(item => (
+                      <button
+                        key={item.tag}
+                        type="button"
+                        onClick={() => {
+                          setOsTemplates(prev => ({
+                            ...prev,
+                            [activeTemplateTab]: (prev[activeTemplateTab] || '') + ` ${item.tag}`
+                          }));
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 transition-colors"
+                      >
+                        <span className="font-bold text-emerald-700">{item.tag}</span>
+                        <span className="text-[10px] text-slate-500 font-sans">({item.label})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Editor e Preview lado a lado */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Textarea */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Texto do Modelo:
+                    </label>
+                    <textarea
+                      rows={8}
+                      value={osTemplates[activeTemplateTab] || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setOsTemplates(prev => ({
+                          ...prev,
+                          [activeTemplateTab]: val
+                        }));
+                      }}
+                      placeholder="Digite o modelo de mensagem..."
+                      className="w-full rounded-xl border-gray-300 border p-3 text-xs font-sans text-slate-800 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/40"
+                    />
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Suporta formatação do WhatsApp (*negrito*, _itálico_) e quebras de linha normais.
+                    </p>
+                  </div>
+
+                  {/* Pré-visualização WhatsApp */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Pré-visualização do Cliente no WhatsApp:
+                    </label>
+                    <div className="rounded-xl border border-slate-200 bg-[#EFEAE2] p-4 min-h-[180px] flex flex-col justify-end relative shadow-inner">
+                      <div className="bg-white rounded-2xl rounded-tr-xs p-3 shadow-2xs border border-emerald-100 max-w-sm self-end text-xs text-slate-800 leading-relaxed whitespace-pre-wrap">
+                        {(osTemplates[activeTemplateTab] || '')
+                          .replace(/\{cliente\}/gi, 'João da Silva')
+                          .replace(/\{osid\}/gi, '10452')
+                          .replace(/\{servico\}/gi, 'Instalação de Fibra Óptica')
+                          .replace(/\{tecnico\}/gi, 'Carlos Oliveira') || (
+                            <span className="text-slate-400 italic">Digite o conteúdo ao lado para visualizar...</span>
+                          )}
+                        <div className="text-[10px] text-slate-400 text-right mt-1.5 flex items-center justify-end gap-1">
+                          <span>14:30</span>
+                          <span className="text-emerald-500 font-bold">✓✓</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
             </div>
           </div>
 

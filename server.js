@@ -211,6 +211,7 @@ async function initDatabase() {
         await addColumnSafe('companies', 'whaticket_send_signature BOOLEAN DEFAULT FALSE'); 
         await addColumnSafe('companies', 'whaticket_close_ticket BOOLEAN DEFAULT FALSE'); 
         await addColumnSafe('companies', 'whaticket_fast_send BOOLEAN DEFAULT TRUE'); 
+        await addColumnSafe('companies', 'os_templates LONGTEXT'); 
 
         // Migrations Users
         await safeQuery(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
@@ -293,6 +294,7 @@ app.get('/api/companies/:id', async (req, res) => {
                     whaticketSendSignature: Boolean(c.whaticket_send_signature),
                     whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
                     whaticketFastSend: c.whaticket_fast_send !== 0,
+                    osTemplates: c.os_templates ? (typeof c.os_templates === 'string' ? JSON.parse(c.os_templates) : c.os_templates) : null,
                     opaSuiteUrl: c.opa_suite_url || '',
                     opaSuiteToken: c.opa_suite_token || '',
                     opaSuiteCanalId: c.opa_suite_canal_id || '',
@@ -326,6 +328,7 @@ app.get('/api/companies/:id', async (req, res) => {
             whaticketSendSignature: Boolean(c.whaticket_send_signature),
             whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
             whaticketFastSend: c.whaticket_fast_send !== false,
+            osTemplates: c.osTemplates || (c.os_templates ? (typeof c.os_templates === 'string' ? JSON.parse(c.os_templates) : c.os_templates) : null),
             opaSuiteUrl: c.opa_suite_url || '',
             opaSuiteToken: c.opa_suite_token || '',
             opaSuiteCanalId: c.opa_suite_canal_id || '',
@@ -342,21 +345,25 @@ app.put('/api/companies/:id', async (req, res) => {
     const { 
         name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
         whaticketUrl, whaticketToken, whaticketDefaultUserId, whaticketDefaultQueueId, whaticketSendSignature, whaticketCloseTicket, whaticketFastSend,
-        opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId 
+        opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId,
+        osTemplates
     } = req.body;
     try {
         let updatedInDb = false;
+        const osTemplatesStr = osTemplates ? JSON.stringify(osTemplates) : null;
         try {
             await pool.query(`
                 UPDATE companies 
                 SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
                     whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?,
-                    opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
+                    opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?,
+                    os_templates=?
                 WHERE id=?
             `, [
                 name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
                 whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
                 opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, 
+                osTemplatesStr,
                 req.params.id
             ]);
             isDbAvailable = true;
@@ -373,15 +380,18 @@ app.put('/api/companies/:id', async (req, res) => {
                     await pool.query('ALTER TABLE companies ADD COLUMN whaticket_send_signature BOOLEAN DEFAULT FALSE');
                     await pool.query('ALTER TABLE companies ADD COLUMN whaticket_close_ticket BOOLEAN DEFAULT FALSE');
                     await pool.query('ALTER TABLE companies ADD COLUMN whaticket_fast_send BOOLEAN DEFAULT TRUE');
+                    await pool.query('ALTER TABLE companies ADD COLUMN os_templates LONGTEXT');
                     // Retenta o UPDATE
                     await pool.query(`
                         UPDATE companies 
                         SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
-                            whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?
+                            whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?,
+                            os_templates=?
                         WHERE id=?
                     `, [
                         name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
                         whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
+                        osTemplatesStr,
                         req.params.id
                     ]);
                     isDbAvailable = true;
@@ -409,6 +419,10 @@ app.put('/api/companies/:id', async (req, res) => {
             if (whaticketSendSignature !== undefined) c.whaticket_send_signature = Boolean(whaticketSendSignature);
             if (whaticketCloseTicket !== undefined) c.whaticket_close_ticket = Boolean(whaticketCloseTicket);
             if (whaticketFastSend !== undefined) c.whaticket_fast_send = Boolean(whaticketFastSend);
+            if (osTemplates !== undefined) {
+                c.osTemplates = osTemplates;
+                c.os_templates = osTemplatesStr;
+            }
             if (opaSuiteUrl !== undefined) c.opa_suite_url = opaSuiteUrl;
             if (opaSuiteToken !== undefined) c.opa_suite_token = opaSuiteToken;
         }

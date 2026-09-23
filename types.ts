@@ -21,6 +21,14 @@ export interface User {
   whaticketUserId?: string; // ID do Usuário/Atendente no Whaticket
 }
 
+export interface OsTemplatesConfig {
+  abertura?: string;
+  caminho?: string;
+  concluida?: string;
+  botoes?: string;
+  [key: string]: string | undefined;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -34,6 +42,8 @@ export interface Company {
   useCorsProxy: boolean;
   logoUrl: string | null;
   status?: 'active' | 'inactive' | 'suspended';
+  // Modelos de Mensagem O.S. (WhatsApp)
+  osTemplates?: OsTemplatesConfig;
   // Configurações Whaticket (WhatsApp)
   whaticketUrl?: string;
   whaticketToken?: string;

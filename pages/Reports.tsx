@@ -33,7 +33,8 @@ import {
   BadgeCheck,
   ExternalLink,
   Layers,
-  HardHat
+  HardHat,
+  Lock
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -248,6 +249,7 @@ export const Reports: React.FC = () => {
 
   const isEmployeeUser = currentUser?.role === 'employee';
   const canAssignOS = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || Boolean(currentUser?.permissions?.canAssignOS);
+  const canEditWhaticketIds = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || currentUser?.role === 'saas_owner';
 
   useEffect(() => {
     try {
@@ -470,6 +472,30 @@ export const Reports: React.FC = () => {
     const servico = target?.subjectTitle || 'Suporte Técnico';
     const tecnico = target?.technicianName || 'Técnico Especializado';
 
+    // Modelos customizados da empresa configurados pelo administrador
+    let customTemplates: Record<string, string> | null = null;
+    const savedCompany = localStorage.getItem('unity_company_data');
+    if (savedCompany) {
+      try {
+        const comp = JSON.parse(savedCompany);
+        if (comp.osTemplates) {
+          customTemplates = comp.osTemplates;
+        }
+      } catch (e) {}
+    }
+
+    const replaceTags = (template: string) => {
+      return template
+        .replace(/\{cliente\}/gi, client)
+        .replace(/\{osid\}/gi, osId)
+        .replace(/\{servico\}/gi, servico)
+        .replace(/\{tecnico\}/gi, tecnico);
+    };
+
+    if (customTemplates && customTemplates[preset]) {
+      return replaceTags(customTemplates[preset]);
+    }
+
     switch (preset) {
       case 'abertura':
         return `Olá, ${client}! 👋\n\nInformamos que sua Ordem de Serviço *#${osId}* (*${servico}*) foi registrada com sucesso em nosso sistema.\n\nNossa equipe técnica já está acompanhando o caso. Qualquer dúvida, estamos à disposição!`;
@@ -606,24 +632,29 @@ export const Reports: React.FC = () => {
       setWhaticketClientPhone(formattedPhone);
       setWhaticketClientCpf(clientCpf);
 
-      // Carregar preferências da empresa
+      // Carregar preferências da empresa e travar no modo "Com Ticket"
+      let defaultQueue = '8'; // Padrão solicitado: ID 8
+      let defaultUser = '';
       const savedCompany = localStorage.getItem('unity_company_data');
       if (savedCompany) {
           try {
               const comp = JSON.parse(savedCompany);
-              if (comp.whaticketFastSend !== undefined) {
-                  setWhaticketSendMode(comp.whaticketFastSend ? 'noTicket' : 'ticket');
-              }
-              if (comp.whaticketDefaultQueueId) setWhaticketQueueId(comp.whaticketDefaultQueueId);
-              if (comp.whaticketDefaultUserId) setWhaticketUserId(comp.whaticketDefaultUserId);
+              if (comp.whaticketDefaultQueueId) defaultQueue = comp.whaticketDefaultQueueId;
+              if (comp.whaticketDefaultUserId) defaultUser = comp.whaticketDefaultUserId;
               if (comp.whaticketSendSignature !== undefined) setWhaticketSendSignature(Boolean(comp.whaticketSendSignature));
               if (comp.whaticketCloseTicket !== undefined) setWhaticketCloseTicket(Boolean(comp.whaticketCloseTicket));
           } catch (e) {}
       }
 
-      // Se o usuário logado possui atendente vinculado ao Whaticket
+      // Modo único e obrigatório: Com Ticket
+      setWhaticketSendMode('ticket');
+      setWhaticketQueueId(defaultQueue || '8');
+
+      // Se o usuário logado possui atendente vinculado ao Whaticket no cadastro
       if (currentUser?.whaticketUserId) {
           setWhaticketUserId(currentUser.whaticketUserId);
+      } else {
+          setWhaticketUserId(defaultUser);
       }
 
       // Mensagem inicial padrão
@@ -634,9 +665,8 @@ export const Reports: React.FC = () => {
 
   const handleSelectPreset = (preset: string) => {
       setWhaticketPreset(preset);
-      if (preset === 'botoes') {
-          setWhaticketSendMode('buttons');
-      }
+      // Mantém sempre o modo de envio "Com Ticket"
+      setWhaticketSendMode('ticket');
       const msg = getWhaticketPresetTemplate(preset, whaticketTargetOs, whaticketClientName);
       setWhaticketMessageText(msg);
   };
@@ -3687,7 +3717,7 @@ export const Reports: React.FC = () => {
                         { id: 'abertura', label: 'Abertura de O.S.' },
                         { id: 'caminho', label: 'Técnico a Caminho' },
                         { id: 'concluida', label: 'O.S. Concluída' },
-                        { id: 'botoes', label: 'Confirmação com Botões' },
+                        { id: 'botoes', label: 'Confirmação / Agendamento' },
                         { id: 'custom', label: 'Personalizado' }
                       ].map(p => (
                         <button
@@ -3706,168 +3736,106 @@ export const Reports: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Modo de Envio */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
-                    <label className="block text-xs font-bold text-slate-800">Modo de Envio do Whaticket</label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
-                        whaticketSendMode === 'noTicket' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
-                      }`}>
-                        <input
-                          type="radio"
-                          name="whaticketMode"
-                          checked={whaticketSendMode === 'noTicket'}
-                          onChange={() => setWhaticketSendMode('noTicket')}
-                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <div>
-                          <span className="block">Sem Ticket (Rápido)</span>
-                          <span className="text-[10px] text-slate-500 font-normal">Dispara direto sem abrir chamado</span>
-                        </div>
-                      </label>
-
-                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
-                        whaticketSendMode === 'ticket' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
-                      }`}>
-                        <input
-                          type="radio"
-                          name="whaticketMode"
-                          checked={whaticketSendMode === 'ticket'}
-                          onChange={() => setWhaticketSendMode('ticket')}
-                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <div>
-                          <span className="block">Com Ticket</span>
-                          <span className="text-[10px] text-slate-500 font-normal">Registra no painel com fila/atendente</span>
-                        </div>
-                      </label>
-
-                      <label className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-colors ${
-                        whaticketSendMode === 'buttons' ? 'bg-emerald-50 border-emerald-400 font-semibold text-emerald-950' : 'bg-white border-slate-200'
-                      }`}>
-                        <input
-                          type="radio"
-                          name="whaticketMode"
-                          checked={whaticketSendMode === 'buttons'}
-                          onChange={() => setWhaticketSendMode('buttons')}
-                          className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <div>
-                          <span className="block">Com Botões</span>
-                          <span className="text-[10px] text-slate-500 font-normal">Opções interativas para o cliente</span>
-                        </div>
-                      </label>
+                  {/* Modo de Envio: Exclusivo Com Ticket */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200">
+                          <CheckCircle2 size={13} />
+                          Modo: Envio com Ticket
+                        </span>
+                        <span className="text-[11px] text-slate-500 hidden sm:inline">
+                          (Registra o chamado no Whaticket na fila e com atendente)
+                        </span>
+                      </div>
+                      {!canEditWhaticketIds && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 bg-slate-200/80 px-2 py-0.5 rounded font-medium">
+                          <Lock size={11} /> IDs protegidos
+                        </span>
+                      )}
                     </div>
 
-                    {/* Opções extras para Modo com Ticket */}
-                    {whaticketSendMode === 'ticket' && (
-                      <div className="pt-2 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                        <div>
-                          <label className="block text-[11px] text-slate-600 mb-0.5">ID da Fila (queueId)</label>
-                          <input
-                            type="text"
-                            placeholder="Opcional"
-                            value={whaticketQueueId}
-                            onChange={e => setWhaticketQueueId(e.target.value)}
-                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] text-slate-600 mb-0.5">ID do Atendente (userId)</label>
-                          <input
-                            type="text"
-                            placeholder="Opcional"
-                            value={whaticketUserId}
-                            onChange={e => setWhaticketUserId(e.target.value)}
-                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
-                          />
-                        </div>
-                        <div className="sm:col-span-2 flex items-center gap-4 pt-1">
-                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-700">
-                            <input
-                              type="checkbox"
-                              checked={whaticketSendSignature}
-                              onChange={e => setWhaticketSendSignature(e.target.checked)}
-                              className="rounded border-gray-300 text-emerald-600"
-                            />
-                            <span>Enviar Assinatura</span>
+                    {/* Fila e Atendente */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                            <span>ID da Fila (queueId)</span>
+                            {!canEditWhaticketIds && <Lock size={11} className="text-slate-400" />}
                           </label>
-                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-700">
-                            <input
-                              type="checkbox"
-                              checked={whaticketCloseTicket}
-                              onChange={e => setWhaticketCloseTicket(e.target.checked)}
-                              className="rounded border-gray-300 text-emerald-600"
-                            />
-                            <span>Fechar Ticket ao enviar</span>
+                          <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                            Padrão: 8
+                          </span>
+                        </div>
+                        <input
+                          type="text"
+                          value={whaticketQueueId || '8'}
+                          onChange={e => canEditWhaticketIds && setWhaticketQueueId(e.target.value)}
+                          disabled={!canEditWhaticketIds}
+                          readOnly={!canEditWhaticketIds}
+                          placeholder="8"
+                          className={`w-full rounded-lg border p-2 text-xs font-mono transition-colors ${
+                            !canEditWhaticketIds 
+                              ? 'bg-slate-100 text-slate-600 border-slate-200 cursor-not-allowed font-semibold' 
+                              : 'bg-white border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
+                          }`}
+                        />
+                        {!canEditWhaticketIds && (
+                          <p className="mt-1 text-[10px] text-slate-400 flex items-center gap-1">
+                            <Lock size={10} /> ID 8 padrão do sistema bloqueado para alteração
+                          </p>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                            <span>ID do Atendente (userId)</span>
+                            {!canEditWhaticketIds && <Lock size={11} className="text-slate-400" />}
                           </label>
+                          <span className="text-[10px] text-slate-500 font-medium">Automático</span>
                         </div>
+                        <input
+                          type="text"
+                          value={whaticketUserId}
+                          onChange={e => canEditWhaticketIds && setWhaticketUserId(e.target.value)}
+                          disabled={!canEditWhaticketIds}
+                          readOnly={!canEditWhaticketIds}
+                          placeholder={currentUser?.whaticketUserId ? `ID ${currentUser.whaticketUserId}` : "Automático do cadastro"}
+                          className={`w-full rounded-lg border p-2 text-xs font-mono transition-colors ${
+                            !canEditWhaticketIds 
+                              ? 'bg-slate-100 text-slate-600 border-slate-200 cursor-not-allowed font-semibold' 
+                              : 'bg-white border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
+                          }`}
+                        />
+                        {!canEditWhaticketIds && (
+                          <p className="mt-1 text-[10px] text-slate-400 flex items-center gap-1">
+                            <Lock size={10} /> Atendente fixado conforme o seu cadastro
+                          </p>
+                        )}
                       </div>
-                    )}
 
-                    {/* Opções extras para Modo com Botões */}
-                    {whaticketSendMode === 'buttons' && (
-                      <div className="pt-2 border-t border-slate-200 space-y-2 text-xs">
-                        <span className="font-semibold text-slate-800 block text-[11px]">Botões Interativos:</span>
-                        <div className="space-y-1.5">
-                          {whaticketButtons.map((btn, idx) => (
-                            <div key={idx} className="flex gap-2 items-center">
-                              <input
-                                type="text"
-                                value={btn.text}
-                                onChange={e => {
-                                  const updated = [...whaticketButtons];
-                                  updated[idx] = { ...updated[idx], text: e.target.value };
-                                  setWhaticketButtons(updated);
-                                }}
-                                className="flex-1 rounded border-gray-300 border p-1.5 text-xs bg-white"
-                                placeholder={`Texto do botão ${idx + 1}`}
-                              />
-                              <input
-                                type="text"
-                                value={btn.id}
-                                onChange={e => {
-                                  const updated = [...whaticketButtons];
-                                  updated[idx] = { ...updated[idx], id: e.target.value };
-                                  setWhaticketButtons(updated);
-                                }}
-                                className="w-16 rounded border-gray-300 border p-1.5 text-xs bg-white font-mono"
-                                placeholder="ID"
-                              />
-                              {whaticketButtons.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setWhaticketButtons(whaticketButtons.filter((_, i) => i !== idx))}
-                                  className="text-red-500 hover:text-red-700 p-1"
-                                >
-                                  <X size={14} />
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                          {whaticketButtons.length < 3 && (
-                            <button
-                              type="button"
-                              onClick={() => setWhaticketButtons([...whaticketButtons, { text: 'Nova Opção', id: String(whaticketButtons.length + 1) }])}
-                              className="text-xs text-emerald-700 font-semibold hover:underline"
-                            >
-                              + Adicionar outro botão
-                            </button>
-                          )}
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] text-slate-600 mb-0.5">Rodapé dos Botões (Footer)</label>
+                      <div className="sm:col-span-2 flex flex-wrap items-center gap-5 pt-1">
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-700 font-medium select-none">
                           <input
-                            type="text"
-                            value={whaticketFooter}
-                            onChange={e => setWhaticketFooter(e.target.value)}
-                            placeholder="Texto do rodapé"
-                            className="w-full rounded border-gray-300 border p-1.5 text-xs bg-white"
+                            type="checkbox"
+                            checked={whaticketSendSignature}
+                            onChange={e => setWhaticketSendSignature(e.target.checked)}
+                            className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                           />
-                        </div>
+                          <span>Enviar Assinatura</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-700 font-medium select-none">
+                          <input
+                            type="checkbox"
+                            checked={whaticketCloseTicket}
+                            onChange={e => setWhaticketCloseTicket(e.target.checked)}
+                            className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span>Fechar Ticket ao enviar</span>
+                        </label>
                       </div>
-                    )}
+                    </div>
                   </div>
 
                   {/* Campo de Texto da Mensagem */}
