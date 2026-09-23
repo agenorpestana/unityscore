@@ -759,25 +759,76 @@ export const Reports: React.FC = () => {
         console.warn('Aviso: Não foi possível obter registro base para merge, enviando campos diretos:', err);
       }
 
-      // 2. Prepara o payload para finalização no IXC
-      const updatePayload: Record<string, any> = {
-        ...baseRecord,
-        status: 'F', // Finalizada
-        data_fechamento: finalDateStr,
-        data_final: finalDateStr,
-        mensagem_resposta: finalizeResponseText.trim()
-      };
+      // 2. Prepara o payload sanitizado contendo apenas campos legítimos da tabela su_oss_chamado
+      // Filtrando aliases de JOIN (como cliente, login, assunto, tecnico, atendente, etc.) que corrompem o UPDATE no IXC
+      const VALID_IXC_CHAMADO_FIELDS = new Set([
+        "tipo", "id_ticket", "protocolo", "id_assunto", "dica_assinatura_digital", 
+        "id_cliente", "id_estrutura", "id_filial", "id_login", "id_contrato_kit", 
+        "origem_endereco", "origem_endereco_estrutura", "latitude", "longitude", 
+        "status_conexao", "prioridade", "melhor_horario_agenda", "setor", 
+        "id_tecnico", "mensagem", "id_receber", "idx", "status_pesquisa_satisfacao", 
+        "status", "habilita_assinatura_cliente", "status_assinatura", "gera_comissao", 
+        "liberado", "id_atendente", "impresso", "preview", "id_wfl_param_os", 
+        "id_wfl_tarefa", "id_su_diagnostico", "regiao_manutencao", "origem_cadastro", 
+        "origem_change_endereco", "status_sla", "ids_login_regiao_manutencao", 
+        "origem_os_aberta", "id_cidade", "bairro", "endereco", "complemento", 
+        "referencia", "id_condominio", "bloco", "apartamento", "data_abertura", 
+        "data_inicio", "data_hora_analise", "data_agenda", "data_agenda_final", 
+        "data_hora_encaminhado", "data_hora_assumido", "data_hora_execucao", 
+        "data_final", "data_fechamento", "data_prazo_limite", "data_reservada", 
+        "data_reagendar", "data_prev_final", "mensagem_resposta", 
+        "justificativa_sla_atrasado", "valor_total", "valor_outras_despesas", 
+        "valor_unit_comissao", "valor_total_comissao",
+        "finaliza_processo", "finalizar_processo", "status_processo",
+        "id_resposta", "id_resposta_padrao", "id_resposta_padrao_finalizacao",
+        "id_colaborador", "id_responsavel", "id_funcionario"
+      ]);
 
+      const updatePayload: Record<string, any> = {};
+
+      // Copia campos válidos do registro base preservando dados do chamado
+      for (const [key, value] of Object.entries(baseRecord)) {
+        if (VALID_IXC_CHAMADO_FIELDS.has(key) && key !== 'id') {
+          updatePayload[key] = value ?? '';
+        }
+      }
+
+      // Parâmetros cruciais para fechamento/finalização no IXC:
+      // Status 'F' = Finalizada (obrigatório para fechar a O.S.)
+      updatePayload.status = 'F';
+      updatePayload.status_processo = 'F';
+      updatePayload.finaliza_processo = 'S';
+      updatePayload.finalizar_processo = 'S';
+
+      // Datas de conclusão e execução
+      updatePayload.data_fechamento = finalDateStr;
+      updatePayload.data_final = finalDateStr;
+      updatePayload.data_hora_execucao = finalDateStr;
+      if (!updatePayload.data_hora_assumido || String(updatePayload.data_hora_assumido).startsWith('0000')) {
+        updatePayload.data_hora_assumido = finalDateStr;
+      }
+
+      // Mensagem de resposta
+      updatePayload.mensagem_resposta = finalizeResponseText.trim();
+
+      // Técnico Responsável / Colaborador:
+      // No IXC o "Colaborador(a) responsável" exibido na O.S. é o 'id_atendente' (e 'id_tecnico')!
+      // Atualizar ambos garante que saia com o nome do funcionário selecionado e NÃO com o do usuário do token.
       if (finalizeTechnicianId) {
-        updatePayload.id_tecnico = finalizeTechnicianId;
-      }
-      if (finalizeResponseId) {
-        updatePayload.id_resposta = finalizeResponseId;
-        updatePayload.id_resposta_padrao = finalizeResponseId;
+        const techIdStr = String(finalizeTechnicianId);
+        updatePayload.id_tecnico = techIdStr;
+        updatePayload.id_atendente = techIdStr;
+        updatePayload.id_colaborador = techIdStr;
+        updatePayload.id_responsavel = techIdStr;
+        updatePayload.id_funcionario = techIdStr;
       }
 
-      // Remove chave primária id do payload
-      delete updatePayload.id;
+      if (finalizeResponseId) {
+        const respIdStr = String(finalizeResponseId);
+        updatePayload.id_resposta = respIdStr;
+        updatePayload.id_resposta_padrao = respIdStr;
+        updatePayload.id_resposta_padrao_finalizacao = respIdStr;
+      }
 
       // 3. Executa o PUT no IXC através do proxy seguro
       const updateRes = await safeFetch(buildUrl(config, `/webservice/v1/su_oss_chamado/${osId}`), {
@@ -788,6 +839,32 @@ export const Reports: React.FC = () => {
 
       if (updateRes && updateRes.type === 'error') {
         throw new Error(updateRes.message || 'Erro retornado pela API do IXC ao finalizar a O.S.');
+      }
+
+      // 3.1 Insere também na tabela de mensagens da O.S. (su_oss_chamado_mensagem)
+      // Isso alimenta a aba "Mensagens" do IXC com a resposta, associando o Colaborador Responsável e "Finaliza processo: Sim"
+      try {
+        await safeFetch(buildUrl(config, '/webservice/v1/su_oss_chamado_mensagem'), {
+          method: 'POST',
+          headers: {
+            ...config.headers,
+            ixcsoft: 'none' // Evita que o proxy envie 'listar', permitindo INSERT normal
+          },
+          body: JSON.stringify({
+            id_chamado: osId,
+            mensagem: finalizeResponseText.trim(),
+            status: 'F',
+            finaliza_processo: 'S',
+            id_funcionario: finalizeTechnicianId ? String(finalizeTechnicianId) : '',
+            id_atendente: finalizeTechnicianId ? String(finalizeTechnicianId) : '',
+            id_colaborador: finalizeTechnicianId ? String(finalizeTechnicianId) : '',
+            id_tecnico: finalizeTechnicianId ? String(finalizeTechnicianId) : '',
+            data: finalDateStr,
+            id_resposta: finalizeResponseId ? String(finalizeResponseId) : ''
+          })
+        });
+      } catch (msgErr) {
+        console.warn('Tentativa de registro em su_oss_chamado_mensagem:', msgErr);
       }
 
       // 4. Salva a conclusão no banco de dados local

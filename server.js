@@ -495,9 +495,9 @@ app.use('/api/ixc-proxy', async (req, res) => {
             'Content-Type': 'application/json'
         };
 
-        if (req.headers['ixcsoft']) {
+        if (req.headers['ixcsoft'] && req.headers['ixcsoft'] !== 'none') {
             proxyHeaders['ixcsoft'] = req.headers['ixcsoft'];
-        } else if (requestMethod === 'POST') {
+        } else if (requestMethod === 'POST' && req.headers['ixcsoft'] !== 'none') {
             proxyHeaders['ixcsoft'] = 'listar';
         }
 
@@ -514,6 +514,11 @@ app.use('/api/ixc-proxy', async (req, res) => {
         const response = await fetch(targetUrl, fetchOptions).finally(() => clearTimeout(timeoutId));
 
         const data = await response.text();
+
+        try {
+            const logEntry = `[${new Date().toISOString()}] ${requestMethod} ${targetUrl}\nHEADERS: ${JSON.stringify(proxyHeaders)}\nREQ BODY: ${fetchOptions.body || ''}\nRES STATUS: ${response.status}\nRES BODY: ${data.substring(0, 1000)}\n----------------------------------------\n`;
+            fs.appendFileSync('/tmp/ixc_proxy.log', logEntry);
+        } catch (logErr) {}
         
         try {
             res.json(JSON.parse(data));
