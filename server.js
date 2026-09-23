@@ -6,20 +6,49 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 
+// Função para limpar aspas que o script bash possa ter injetado no .env
+const cleanEnv = (val) => {
+    if (!val) return '';
+    return String(val).replace(/^["']|["']$/g, '').trim();
+};
+
 // Tenta ler o .env manualmente para garantir que o PM2 não sobrescreva com variáveis vazias
 const envPath = path.join(__dirname, '.env');
+let envFilePort = null;
 if (fs.existsSync(envPath)) {
-    const envConfig = require('dotenv').parse(fs.readFileSync(envPath));
-    for (const k in envConfig) {
-        process.env[k] = envConfig[k];
+    try {
+        const envConfig = require('dotenv').parse(fs.readFileSync(envPath));
+        for (const k in envConfig) {
+            process.env[k] = cleanEnv(envConfig[k]);
+        }
+        if (envConfig.PORT) {
+            envFilePort = parseInt(cleanEnv(envConfig.PORT), 10);
+        }
+    } catch (e) {
+        console.warn('⚠️ Erro ao carregar .env:', e.message);
     }
 } else {
     require('dotenv').config();
 }
 
 const app = express();
-// No ambiente Cloud Run / Dev Server, a porta externa é mapeada para a porta interna 3000
-const PORT = process.env.APP_PORT || (process.env.DEFAULT_APP_PORT ? parseInt(process.env.DEFAULT_APP_PORT, 10) : 3000);
+
+// Determinação da porta:
+// 1. Se houver arquivo .env com PORT explícito (VPS / produção), usa PORT do .env (ex: 3001).
+// 2. Se APP_PORT for especificado no ambiente: usa APP_PORT.
+// 3. Se process.env.PORT estiver definido e NÃO for a porta interna do sandbox Cloud Run (8080): usa-o.
+// 4. Caso contrário (ambiente AI Studio Dev): usa a porta padrão 3000 exigida pelo ambiente.
+let detectedPort = 3000;
+if (envFilePort && !isNaN(envFilePort)) {
+    detectedPort = envFilePort;
+} else if (process.env.APP_PORT && !isNaN(parseInt(cleanEnv(process.env.APP_PORT), 10))) {
+    detectedPort = parseInt(cleanEnv(process.env.APP_PORT), 10);
+} else if (process.env.PORT && process.env.PORT !== '8080' && !isNaN(parseInt(cleanEnv(process.env.PORT), 10))) {
+    detectedPort = parseInt(cleanEnv(process.env.PORT), 10);
+} else if (process.env.DEFAULT_APP_PORT) {
+    detectedPort = parseInt(cleanEnv(process.env.DEFAULT_APP_PORT), 10);
+}
+const PORT = detectedPort;
 
 let isDbAvailable = false;
 
@@ -92,15 +121,12 @@ const inMemoryStore = {
     osSplits: {}
 };
 
-// Função para limpar aspas que o script bash possa ter injetado no .env
-const cleanEnv = (val) => {
-    if (!val) return '';
-    return val.replace(/^["']|["']$/g, '').trim();
-};
+const rawHost = cleanEnv(process.env.DB_HOST) || '127.0.0.1';
+const dbHost = (rawHost === 'localhost') ? '127.0.0.1' : rawHost;
 
 // Configuração do Banco de Dados (SaaS)
 const dbConfig = {
-    host: cleanEnv(process.env.DB_HOST) || 'localhost',
+    host: dbHost,
     port: process.env.DB_PORT ? parseInt(cleanEnv(process.env.DB_PORT), 10) : 3306,
     user: cleanEnv(process.env.DB_USER) || 'unity_user',
     // Fallback rígido para a senha caso o .env falhe na VPS
@@ -1940,8 +1966,20 @@ async function startServer() {
         });
     }
 
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+    const server = http.createServer(app);
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`❌ [ERRO DE PORTA] A porta ${PORT} já está em uso na VPS/servidor!`);
+            console.error(`💡 Verifique se outro processo está usando a porta ${PORT} ou defina PORT=3001 (ou outra porta livre) no arquivo .env.`);
+        } else {
+            console.error('❌ Erro no servidor HTTP:', err.message);
+        }
+    });
+
+    server.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Unity Score SaaS rodando com sucesso em http://0.0.0.0:${PORT}`);
+        console.log(`📡 Modo de execução: ${process.env.NODE_ENV || 'development'}`);
     });
 }
 
