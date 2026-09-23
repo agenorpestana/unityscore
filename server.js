@@ -237,9 +237,15 @@ async function initDatabase() {
             technician_id VARCHAR(50), 
             assigned_name VARCHAR(255), 
             assigned_by VARCHAR(255), 
+            completed BOOLEAN DEFAULT FALSE,
+            completed_at TIMESTAMP NULL,
+            completed_by VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
             UNIQUE KEY unique_assignment (company_id, os_id)
         )`);
+        await addColumnSafe('os_assignments', 'completed BOOLEAN DEFAULT FALSE');
+        await addColumnSafe('os_assignments', 'completed_at TIMESTAMP NULL');
+        await addColumnSafe('os_assignments', 'completed_by VARCHAR(255)');
 
         // Penalizações
         await safeQuery(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
@@ -910,7 +916,7 @@ app.get('/api/os-assignments', async (req, res) => {
     try {
         let mapFound = null;
         try {
-            let query = 'SELECT os_id, user_id, technician_id, assigned_name, assigned_by, created_at FROM os_assignments';
+            let query = 'SELECT os_id, user_id, technician_id, assigned_name, assigned_by, completed, completed_at, completed_by, created_at FROM os_assignments';
             let params = [];
             if (companyId && companyId !== 'undefined' && companyId !== 'null') {
                 query += ' WHERE (company_id = ? OR company_id = 0 OR company_id IS NULL)';
@@ -927,6 +933,9 @@ app.get('/api/os-assignments', async (req, res) => {
                         technicianId: r.technician_id,
                         assignedName: r.assigned_name,
                         assignedBy: r.assigned_by,
+                        completed: Boolean(r.completed),
+                        completedAt: r.completed_at,
+                        completedBy: r.completed_by,
                         createdAt: r.created_at
                     };
                 });
@@ -942,6 +951,42 @@ app.get('/api/os-assignments', async (req, res) => {
         res.json(inMemoryStore.osAssignments || {});
     } catch (e) {
         res.json(inMemoryStore.osAssignments || {});
+    }
+});
+
+// Concluir ou Reabrir OS Atribuída
+app.post('/api/os-assignments/complete', async (req, res) => {
+    const { companyId, osId, completed, completedBy } = req.body;
+    const cid = companyId || req.headers['x-company-id'];
+    if (!cid || !osId) return res.status(400).json({ error: 'companyId e osId são obrigatórios' });
+
+    const isCompleted = completed !== undefined ? Boolean(completed) : true;
+    const completedAt = isCompleted ? new Date() : null;
+    const who = isCompleted ? (completedBy || null) : null;
+
+    try {
+        await pool.query(`
+            INSERT INTO os_assignments (company_id, os_id, completed, completed_at, completed_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                completed = VALUES(completed),
+                completed_at = VALUES(completed_at),
+                completed_by = VALUES(completed_by)
+        `, [cid, osId, isCompleted ? 1 : 0, completedAt, who]);
+
+        // Sincronizar fallback em memória
+        if (!inMemoryStore.osAssignments) inMemoryStore.osAssignments = {};
+        if (!inMemoryStore.osAssignments[osId]) {
+            inMemoryStore.osAssignments[osId] = { osId };
+        }
+        inMemoryStore.osAssignments[osId].completed = isCompleted;
+        inMemoryStore.osAssignments[osId].completedAt = completedAt;
+        inMemoryStore.osAssignments[osId].completedBy = who;
+
+        res.json({ success: true, osId, completed: isCompleted });
+    } catch (e) {
+        console.error('Erro ao atualizar status de conclusão da OS:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 

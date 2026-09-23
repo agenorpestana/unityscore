@@ -77,6 +77,9 @@ export interface OsAssignmentItem {
   assignedName?: string;
   assignedBy?: string;
   createdAt?: string;
+  completed?: boolean;
+  completedAt?: string;
+  completedBy?: string;
 }
 
 export interface SubjectItem {
@@ -246,8 +249,10 @@ export const Reports: React.FC = () => {
   const [whaticketNumberStatus, setWhaticketNumberStatus] = useState<WhaticketCheckNumberResult | null>(null);
   const [isSendingWhaticket, setIsSendingWhaticket] = useState(false);
   const [whaticketToast, setWhaticketToast] = useState<{ success: boolean; text: string } | null>(null);
+  const [showCompleted, setShowCompleted] = useState<boolean>(false);
+  const [completingOsId, setCompletingOsId] = useState<string | null>(null);
 
-  const isEmployeeUser = currentUser?.role === 'employee';
+  const isEmployeeUser = currentUser?.role === 'employee' || currentUser?.role === 'user';
   const canAssignOS = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || Boolean(currentUser?.permissions?.canAssignOS);
   const canEditWhaticketIds = currentUser?.role === 'super_admin' || currentUser?.role === 'admin' || currentUser?.role === 'saas_owner';
 
@@ -258,7 +263,7 @@ export const Reports: React.FC = () => {
         const u = JSON.parse(savedSession);
         setCurrentUser(u);
         if (u?.name) setCurrentUserName(u.name);
-        if (u?.role === 'employee') {
+        if (u?.role === 'employee' || u?.role === 'user') {
           setActiveSubTab('subjects');
         }
       }
@@ -587,6 +592,58 @@ export const Reports: React.FC = () => {
           }
       } catch (e: any) {
           alert(`Erro ao remover atribuição: ${e.message}`);
+      }
+  };
+
+  const handleToggleCompleteOs = async (osId: string, completed: boolean) => {
+      const config = getApiConfig();
+      const cid = config?.id;
+      if (!cid) return;
+
+      const completedBy = currentUser?.name || 'Usuário';
+
+      // Atualização otimista imediata no estado local
+      setOsAssignments(prev => {
+          const existing = prev[osId] || { osId };
+          return {
+              ...prev,
+              [osId]: {
+                  ...existing,
+                  completed,
+                  completedAt: completed ? new Date().toISOString() : undefined,
+                  completedBy: completed ? completedBy : undefined
+              }
+          };
+      });
+
+      setCompletingOsId(osId);
+      try {
+          const res = await fetch('/api/os-assignments/complete', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'x-company-id': String(cid)
+              },
+              body: JSON.stringify({
+                  companyId: cid,
+                  osId,
+                  completed,
+                  completedBy
+              })
+          });
+          if (res.ok) {
+              setAssignmentToast({
+                  type: 'success',
+                  text: completed ? `O.S. #${osId} marcada como concluída!` : `O.S. #${osId} reaberta!`
+              });
+              setTimeout(() => setAssignmentToast(null), 3000);
+          } else {
+              console.warn('Resposta não OK ao concluir OS:', await res.text());
+          }
+      } catch (err: any) {
+          console.error('Erro ao atualizar conclusão da OS:', err);
+      } finally {
+          setCompletingOsId(null);
       }
   };
 
@@ -1710,13 +1767,30 @@ export const Reports: React.FC = () => {
     }
   }, [activeSubTab, isEmployeeUser, subjectReportData, isLoadingSubject, getApiConfig]);
 
+  // Total de OSs concluídas
+  const completedAssignmentsCount = React.useMemo(() => {
+    if (!subjectReportData) return 0;
+    return subjectReportData.filter(r => Boolean(osAssignments[r.osId]?.completed)).length;
+  }, [subjectReportData, osAssignments]);
+
   // Filtragem local rápida para a tabela do Relatório por Assunto
   const filteredSubjectRows = React.useMemo(() => {
     if (!subjectReportData) return [];
-    if (!subjectSearchQuery.trim()) return subjectReportData;
+
+    // Filtro por O.S. Concluída (quando showCompleted é falso, oculta as concluídas da tela; quando ativo, lista as concluídas)
+    let rows = subjectReportData.filter(row => {
+      const isCompleted = Boolean(osAssignments[row.osId]?.completed);
+      if (showCompleted) {
+        return isCompleted;
+      } else {
+        return !isCompleted;
+      }
+    });
+
+    if (!subjectSearchQuery.trim()) return rows;
 
     const query = subjectSearchQuery.toLowerCase().trim();
-    return subjectReportData.filter(row => {
+    return rows.filter(row => {
       const cName = (clientCache[row.clientId] || row.clientName).toLowerCase();
       const tName = (row.technicianName || '').toLowerCase();
       return (
@@ -1731,7 +1805,7 @@ export const Reports: React.FC = () => {
         row.status.toLowerCase().includes(query)
       );
     });
-  }, [subjectReportData, subjectSearchQuery, clientCache]);
+  }, [subjectReportData, subjectSearchQuery, clientCache, osAssignments, showCompleted]);
 
   const totalSubjectPages = Math.ceil(filteredSubjectRows.length / SUBJECT_PAGE_SIZE) || 1;
   const paginatedSubjectRows = filteredSubjectRows.slice(
@@ -2274,21 +2348,23 @@ export const Reports: React.FC = () => {
 
           <div className="flex flex-col items-end gap-2">
              <div className="flex bg-gray-100 p-1 rounded-xl shadow-inner border border-gray-200">
-                <button 
-                  onClick={() => setActiveSubTab('employees')} 
-                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
-                    activeSubTab === 'employees' 
-                      ? 'bg-white text-brand-600 shadow-sm' 
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <FileText size={16} />
-                  Por Funcionário
-                </button>
+                {!isEmployeeUser && (
+                  <button 
+                    onClick={() => setActiveSubTab('employees')} 
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                      activeSubTab === 'employees' 
+                        ? 'bg-white text-brand-600 shadow-sm' 
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <FileText size={16} />
+                    Por Funcionário
+                  </button>
+                )}
                 <button 
                   onClick={() => setActiveSubTab('subjects')} 
                   className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
-                    activeSubTab === 'subjects' 
+                    activeSubTab === 'subjects' || isEmployeeUser
                       ? 'bg-white text-brand-600 shadow-sm' 
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
@@ -2315,7 +2391,7 @@ export const Reports: React.FC = () => {
       {/* ========================================================================= */}
       {/* SUB-ABA 1: RELATÓRIO POR FUNCIONÁRIO (EXISTENTE)                           */}
       {/* ========================================================================= */}
-      {activeSubTab === 'employees' && (
+      {activeSubTab === 'employees' && !isEmployeeUser && (
         <>
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print">
             <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
@@ -2739,25 +2815,49 @@ export const Reports: React.FC = () => {
               </div>
             </div>
 
-            {/* Opção Adicional: Ocultar Técnico */}
+            {/* Opções Adicionais */}
             <div className="pt-4 mt-4 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2.5 cursor-pointer select-none bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3.5 py-2 rounded-lg transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={hideTechnician} 
-                  onChange={(e) => setHideTechnician(e.target.checked)}
-                  className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-4 h-4 cursor-pointer" 
-                />
-                <UserX size={16} className={hideTechnician ? "text-amber-600" : "text-gray-400"} />
-                <span className="text-xs font-semibold text-gray-700">
-                  Ocultar coluna "Técnico Responsável" no relatório
-                </span>
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className={`inline-flex items-center gap-2.5 cursor-pointer select-none border px-3.5 py-2 rounded-lg transition-colors ${
+                  showCompleted 
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-semibold' 
+                    : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-gray-700'
+                }`}>
+                  <input 
+                    type="checkbox" 
+                    checked={showCompleted} 
+                    onChange={(e) => {
+                      setShowCompleted(e.target.checked);
+                      setSubjectPage(1);
+                    }}
+                    className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer" 
+                  />
+                  <CheckCircle2 size={16} className={showCompleted ? "text-emerald-600" : "text-gray-400"} />
+                  <span className="text-xs">
+                    Listar O.S. Concluídas {completedAssignmentsCount > 0 ? `(${completedAssignmentsCount})` : ''}
+                  </span>
+                </label>
+
+                <label className="inline-flex items-center gap-2.5 cursor-pointer select-none bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3.5 py-2 rounded-lg transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={hideTechnician} 
+                    onChange={(e) => setHideTechnician(e.target.checked)}
+                    className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 w-4 h-4 cursor-pointer" 
+                  />
+                  <UserX size={16} className={hideTechnician ? "text-amber-600" : "text-gray-400"} />
+                  <span className="text-xs font-semibold text-gray-700">
+                    Ocultar coluna "Técnico Responsável"
+                  </span>
+                </label>
+              </div>
 
               <span className="text-xs text-gray-400">
-                {hideTechnician 
-                  ? 'A coluna do técnico ficará oculta na tela e na impressão, expandindo os demais campos.' 
-                  : 'A coluna do técnico está visível.'}
+                {showCompleted 
+                  ? 'Exibindo O.S. marcadas como concluídas.' 
+                  : hideTechnician 
+                  ? 'A coluna do técnico ficará oculta no relatório.' 
+                  : 'Exibindo O.S. ativas/pendentes.'}
               </span>
             </div>
           </div>
@@ -3012,6 +3112,14 @@ export const Reports: React.FC = () => {
                     <div>
                       Com Resposta Preenchida: <strong className="text-slate-900 font-mono">{filteredSubjectRows.filter(r => r.responseId !== '-' || r.responseContent !== '-').length}</strong>
                     </div>
+                    {completedAssignmentsCount > 0 && (
+                      <>
+                        <div className="text-slate-400">•</div>
+                        <div>
+                          Concluídas: <strong className="text-emerald-700 font-mono">{completedAssignmentsCount}</strong>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -3038,6 +3146,25 @@ export const Reports: React.FC = () => {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
+                    {/* Checkbox de Concluído para listar as O.S. concluídas */}
+                    <label className={`flex items-center gap-1.5 cursor-pointer select-none text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors shadow-2xs whitespace-nowrap ${
+                      showCompleted 
+                        ? 'bg-emerald-100 text-emerald-900 border-emerald-300' 
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}>
+                      <input 
+                        type="checkbox" 
+                        checked={showCompleted} 
+                        onChange={(e) => {
+                          setShowCompleted(e.target.checked);
+                          setSubjectPage(1);
+                        }}
+                        className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5 cursor-pointer" 
+                      />
+                      <CheckCircle2 size={14} className={showCompleted ? "text-emerald-700" : "text-gray-400"} />
+                      <span>Concluído {completedAssignmentsCount > 0 ? `(${completedAssignmentsCount})` : ''}</span>
+                    </label>
+
                     {/* Checkbox de Atalho para Ocultar Técnico */}
                     <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-gray-700 bg-white border border-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors shadow-sm whitespace-nowrap">
                       <input 
@@ -3071,6 +3198,22 @@ export const Reports: React.FC = () => {
                     </button>
                   </div>
                 </div>
+
+                {/* Banner de status quando filtrando concluídas */}
+                {showCompleted && (
+                  <div className="mx-4 mt-3 bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-lg flex items-center justify-between gap-2 text-xs text-emerald-900 no-print">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                      <span>Exibindo <strong>{filteredSubjectRows.length}</strong> Ordens de Serviço marcadas como <strong>Concluídas</strong>.</span>
+                    </div>
+                    <button 
+                      onClick={() => { setShowCompleted(false); setSubjectPage(1); }}
+                      className="text-xs font-bold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
+                    >
+                      Ver O.S. Pendentes
+                    </button>
+                  </div>
+                )}
 
                 {/* Conteúdo da Tabela */}
                 <div className="overflow-x-auto border border-gray-200 rounded-lg">
@@ -3118,7 +3261,7 @@ export const Reports: React.FC = () => {
                         <th className="px-3 py-2.5 min-w-[140px] max-w-[220px]">Resposta</th>
                         <th className="px-3 py-2.5 min-w-[100px] text-center report-nowrap">Data</th>
                         <th className="px-3 py-2.5 text-center w-20 report-nowrap">Status</th>
-                        <th className="px-2.5 py-2.5 text-center min-w-[140px] sticky right-0 bg-gray-50 z-20 shadow-[-3px_0_6px_-2px_rgba(0,0,0,0.08)] border-l border-gray-200 no-print">Ações</th>
+                        <th className="px-2.5 py-2.5 text-center min-w-[210px] sticky right-0 bg-gray-50 z-20 shadow-[-3px_0_6px_-2px_rgba(0,0,0,0.08)] border-l border-gray-200 no-print">Ações</th>
                       </tr>
                     </thead>
 
@@ -3267,7 +3410,7 @@ export const Reports: React.FC = () => {
 
                             {/* Coluna Ações (Responsiva e Fixa na borda direita) */}
                             <td className="px-2 py-2 text-center no-print whitespace-nowrap sticky right-0 bg-white group-hover:bg-gray-50 z-10 shadow-[-3px_0_6px_-2px_rgba(0,0,0,0.08)] border-l border-gray-200">
-                              <div className="flex items-center justify-center gap-1">
+                              <div className="flex items-center justify-center gap-1.5">
                                 {/* Botão Atribuir Técnico/Funcionário (somente Adm ou Gestor com canAssignOS) */}
                                 {canAssignOS ? (
                                   <div className="inline-flex items-center">
@@ -3303,6 +3446,41 @@ export const Reports: React.FC = () => {
                                   )
                                 )}
 
+                                {/* Botão Concluir para OS atribuída a um funcionário */}
+                                {(assignment || isEmployeeUser) && (
+                                  (assignment?.completed || osAssignments[row.osId]?.completed) ? (
+                                    <button
+                                      type="button"
+                                      disabled={completingOsId === row.osId}
+                                      onClick={() => handleToggleCompleteOs(row.osId, false)}
+                                      title="O.S. Concluída! Clique para reabrir se necessário."
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 transition-colors shadow-2xs shrink-0"
+                                    >
+                                      {completingOsId === row.osId ? (
+                                        <Loader2 size={12} className="animate-spin" />
+                                      ) : (
+                                        <CheckCircle2 size={12} className="text-emerald-700" />
+                                      )}
+                                      <span>Concluída</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={completingOsId === row.osId}
+                                      onClick={() => handleToggleCompleteOs(row.osId, true)}
+                                      title="Marcar O.S. como Concluída (ela sairá da tela e ficará concluída)"
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-2xs shrink-0 disabled:opacity-50"
+                                    >
+                                      {completingOsId === row.osId ? (
+                                        <Loader2 size={12} className="animate-spin" />
+                                      ) : (
+                                        <CheckCircle2 size={12} />
+                                      )}
+                                      <span>Concluir</span>
+                                    </button>
+                                  )
+                                )}
+
                                 {/* Botão Enviar WhatsApp via Whaticket */}
                                 <button
                                   type="button"
@@ -3322,7 +3500,34 @@ export const Reports: React.FC = () => {
                       {filteredSubjectRows.length === 0 && (
                         <tr>
                           <td colSpan={hideTechnician ? 9 : 10} className="p-8 text-center text-gray-500">
-                            Nenhum registro encontrado para os filtros selecionados.
+                            <div className="flex flex-col items-center justify-center gap-2 py-4">
+                              {showCompleted ? (
+                                <>
+                                  <CheckCircle2 size={36} className="text-emerald-400" />
+                                  <p className="font-semibold text-gray-700">Nenhuma O.S. concluída encontrada.</p>
+                                  <p className="text-xs text-gray-400">Marque as O.S. como concluídas através do botão "Concluir" na coluna de Ações.</p>
+                                  <button 
+                                    onClick={() => { setShowCompleted(false); setSubjectPage(1); }}
+                                    className="mt-2 text-xs font-semibold px-3 py-1.5 bg-brand-50 text-brand-600 rounded-lg hover:bg-brand-100 transition-colors cursor-pointer"
+                                  >
+                                    Ver O.S. Pendentes
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <FileText size={36} className="text-gray-300" />
+                                  <p className="font-semibold text-gray-600">Nenhuma ordem de serviço encontrada.</p>
+                                  {completedAssignmentsCount > 0 && (
+                                    <button 
+                                      onClick={() => { setShowCompleted(true); setSubjectPage(1); }}
+                                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
+                                    >
+                                      Existem {completedAssignmentsCount} O.S. concluídas. Clique para ver.
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       )}
