@@ -44,15 +44,25 @@ export const UserManagement: React.FC = () => {
 
   useEffect(() => {
     // Carregar ID da empresa do cache local ou sessão
+    let companyId = '1';
     const savedCompany = localStorage.getItem('unity_company_data');
     if (savedCompany) {
+      try {
         const company: Company = JSON.parse(savedCompany);
-        if (company.id) {
-            setCurrentCompanyId(company.id);
-            fetchUsers(company.id);
-            fetchOpaUsers(company.id);
-        }
+        if (company.id) companyId = company.id;
+      } catch (e) {}
+    } else {
+      const sessionStr = localStorage.getItem('unity_user_session');
+      if (sessionStr) {
+        try {
+          const session = JSON.parse(sessionStr);
+          if (session.companyId) companyId = session.companyId;
+        } catch (e) {}
+      }
     }
+    setCurrentCompanyId(companyId);
+    fetchUsers(companyId);
+    fetchOpaUsers(companyId);
   }, []);
 
   const fetchUsers = async (companyId: string) => {

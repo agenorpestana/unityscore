@@ -101,6 +101,7 @@ const cleanEnv = (val) => {
 // Configuração do Banco de Dados (SaaS)
 const dbConfig = {
     host: cleanEnv(process.env.DB_HOST) || 'localhost',
+    port: process.env.DB_PORT ? parseInt(cleanEnv(process.env.DB_PORT), 10) : 3306,
     user: cleanEnv(process.env.DB_USER) || 'unity_user',
     // Fallback rígido para a senha caso o .env falhe na VPS
     password: cleanEnv(process.env.DB_PASSWORD) || 'unity123.789',
@@ -111,7 +112,7 @@ const dbConfig = {
     connectTimeout: 5000
 };
 
-console.log(`Tentando conectar ao banco: ${dbConfig.user}@${dbConfig.host} no banco ${dbConfig.database} (Senha configurada: ${dbConfig.password ? 'SIM' : 'NÃO'})`);
+console.log(`Tentando conectar ao banco: ${dbConfig.user}@${dbConfig.host}:${dbConfig.port} no banco ${dbConfig.database} (Senha configurada: ${dbConfig.password ? 'SIM' : 'NÃO'})`);
 
 // Pool de conexão
 const pool = mysql.createPool(dbConfig);
@@ -125,28 +126,44 @@ async function initDatabase() {
     let connection;
     try {
         connection = await pool.getConnection();
-        
-        console.log('🔧 Verificando estrutura do banco de dados...');
+        isDbAvailable = true;
+        console.log('🔧 Conexão com MySQL estabelecida com sucesso! Verificando estrutura das tabelas...');
+    } catch (connErr) {
+        isDbAvailable = false;
+        console.warn('⚠️ Conexão inicial com MySQL indisponível (' + connErr.message + '). O sistema operará com reconexão sob demanda e fallback local.');
+        return;
+    }
 
+    const safeQuery = async (sql, params = []) => {
+        try {
+            return await connection.query(sql, params);
+        } catch (e) {
+            console.log(`Nota na query DB [${sql.substring(0, 45)}...]: ${e.message}`);
+            return [[]];
+        }
+    };
+
+    const addColumnSafe = async (table, columnDef) => {
+        try {
+            await connection.query(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+            console.log(`Coluna adicionada a ${table}: ${columnDef}`);
+        } catch (e) {
+            if (e.errno !== 1060 && !e.message?.includes('Duplicate column')) {
+                console.log(`Nota em ${table}: ${e.message}`);
+            }
+        }
+    };
+
+    try {
         // Tabelas Base (Planos, Companies, Users, Score_Rules)
-        await connection.query(`CREATE TABLE IF NOT EXISTS saas_plans (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, price DECIMAL(10, 2) NOT NULL, max_users INT NOT NULL, active BOOLEAN DEFAULT TRUE)`);
+        await safeQuery(`CREATE TABLE IF NOT EXISTS saas_plans (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, price DECIMAL(10, 2) NOT NULL, max_users INT NOT NULL, active BOOLEAN DEFAULT TRUE)`);
         
-        const [plans] = await connection.query("SELECT * FROM saas_plans");
-        if (plans.length === 0) {
-            await connection.query(`INSERT INTO saas_plans (name, price, max_users) VALUES ('Básico', 99.90, 3), ('Profissional', 199.90, 10), ('Enterprise', 499.90, 999)`);
+        const [plans] = await safeQuery("SELECT * FROM saas_plans");
+        if (Array.isArray(plans) && plans.length === 0) {
+            await safeQuery(`INSERT INTO saas_plans (name, price, max_users) VALUES ('Básico', 99.90, 3), ('Profissional', 199.90, 10), ('Enterprise', 499.90, 999)`);
         }
 
-        await connection.query(`CREATE TABLE IF NOT EXISTS companies (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, cnpj VARCHAR(20), email_contact VARCHAR(255), plan_id INT, status ENUM('active', 'inactive', 'suspended') DEFAULT 'active', expiration_date DATE, ixc_domain VARCHAR(255), ixc_token VARCHAR(255), active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (plan_id) REFERENCES saas_plans(id))`);
-
-        // --- MIGRATIONS (Colunas adicionais para Configurações) ---
-        const addColumnSafe = async (table, columnDef) => {
-            try {
-                await connection.query(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
-                console.log(`Column added to ${table}: ${columnDef}`);
-            } catch (e) {
-                if (e.errno !== 1060) console.log(`Note on ${table}: ${e.message}`);
-            }
-        };
+        await safeQuery(`CREATE TABLE IF NOT EXISTS companies (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, cnpj VARCHAR(20), email_contact VARCHAR(255), plan_id INT, status ENUM('active', 'inactive', 'suspended') DEFAULT 'active', expiration_date DATE, ixc_domain VARCHAR(255), ixc_token VARCHAR(255), active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
 
         // Migrations Companies
         await addColumnSafe('companies', 'plan_id INT');
@@ -170,25 +187,22 @@ async function initDatabase() {
         await addColumnSafe('companies', 'whaticket_fast_send BOOLEAN DEFAULT TRUE'); 
 
         // Migrations Users
-        await connection.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE)`);
+        await safeQuery(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, name VARCHAR(255) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user', active BOOLEAN DEFAULT TRUE, permissions JSON, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
         
         await addColumnSafe('users', 'ixc_employee_id VARCHAR(50) DEFAULT NULL');
         await addColumnSafe('users', 'opa_user_id VARCHAR(100) DEFAULT NULL');
         await addColumnSafe('users', 'whaticket_user_id VARCHAR(50) DEFAULT NULL');
-        try {
-            await connection.query(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
-        } catch (e) {}
+        await safeQuery(`ALTER TABLE users MODIFY COLUMN role ENUM('saas_owner', 'super_admin', 'admin', 'user', 'employee') DEFAULT 'user'`);
 
-        await connection.query(`CREATE TABLE IF NOT EXISTS score_rules (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, subject_id VARCHAR(50) NOT NULL, points DECIMAL(10, 2) DEFAULT 0, type ENUM('internal', 'external', 'both') DEFAULT 'both', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_rule (company_id, subject_id))`);
-
-        // Migration Score Rules (Divisão de Pontos)
+        // Regras de Pontuação
+        await safeQuery(`CREATE TABLE IF NOT EXISTS score_rules (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT DEFAULT 0, subject_id VARCHAR(50) NOT NULL, points DECIMAL(10, 2) DEFAULT 0, type ENUM('internal', 'external', 'both') DEFAULT 'both', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_rule (company_id, subject_id))`);
         await addColumnSafe('score_rules', 'allow_split BOOLEAN DEFAULT FALSE');
 
-        // Tabela de Splits (Divisão de Pontos por OS)
-        await connection.query(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
+        // Splits de OS
+        await safeQuery(`CREATE TABLE IF NOT EXISTS os_splits (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT DEFAULT 0, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY unique_split_entry (company_id, os_id, technician_id))`);
 
-        // Tabela de Atribuição de OS para Funcionários/Técnicos
-        await connection.query(`CREATE TABLE IF NOT EXISTS os_assignments (
+        // Atribuições de OS
+        await safeQuery(`CREATE TABLE IF NOT EXISTS os_assignments (
             id INT AUTO_INCREMENT PRIMARY KEY, 
             company_id INT NOT NULL, 
             os_id VARCHAR(50) NOT NULL, 
@@ -200,29 +214,21 @@ async function initDatabase() {
             UNIQUE KEY unique_assignment (company_id, os_id)
         )`);
 
-        // Tabela de Penalizações (Penalties)
-        try {
-            await connection.query(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-            console.log('✅ Tabela os_penalties verificada/criada com sucesso.');
-        } catch (penaltyTableError) {
-            console.error('❌ Erro ao criar tabela os_penalties:', penaltyTableError);
-        }
+        // Penalizações
+        await safeQuery(`CREATE TABLE IF NOT EXISTS os_penalties (id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, os_id VARCHAR(50) NOT NULL, technician_id VARCHAR(50) NOT NULL, amount DECIMAL(10, 2) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
 
-        const [users] = await connection.query("SELECT * FROM users WHERE email = ? OR email = ?", ['unity@unityautomacoes.com.br', 'suporte@unityautomacoes.com.br']);
-        if (users.length === 0) {
+        // Usuários padrão de administração
+        const [users] = await safeQuery("SELECT * FROM users WHERE email = ? OR email = ?", ['unity@unityautomacoes.com.br', 'suporte@unityautomacoes.com.br']);
+        if (Array.isArray(users) && users.length === 0) {
             console.log('👤 Criando usuários padrão Unity e Suporte...');
-            await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Unity Admin', 'unity@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
-            await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Suporte Unity', 'suporte@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
-        } else if (users.length === 1 && users[0].email === 'unity@unityautomacoes.com.br') {
-            console.log('👤 Criando usuário Suporte...');
-            await connection.query(`INSERT INTO users (name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?)`, ['Suporte Unity', 'suporte@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
+            await safeQuery(`INSERT INTO users (company_id, name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)`, [1, 'Unity Admin', 'unity@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
+            await safeQuery(`INSERT INTO users (company_id, name, email, password, role, active, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)`, [1, 'Suporte Unity', 'suporte@unityautomacoes.com.br', '200616', 'saas_owner', true, JSON.stringify({ canManageCompany: true, canManageUsers: true, canViewScore: true })]);
         }
 
-        console.log('✅ Banco de dados inicializado/atualizado com sucesso!');
+        console.log('✅ Estrutura do banco de dados verificada e sincronizada!');
         isDbAvailable = true;
     } catch (error) {
-        isDbAvailable = false;
-        console.warn('⚠️ Banco de dados externo indisponível (' + error.message + '). Sistema operando em modo resiliente local.');
+        console.warn('⚠️ Aviso durante verificação de tabelas:', error.message);
     } finally {
         if (connection) connection.release();
     }
@@ -233,39 +239,49 @@ async function initDatabase() {
 // Obter Configurações
 app.get('/api/companies/:id', async (req, res) => {
     try {
-        if (isDbAvailable) {
-            try {
-                const [rows] = await pool.query('SELECT id, name, cnpj, email_contact, phone, address, ixc_domain, ixc_token, logo_url, whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send, opa_suite_url, opa_suite_token, opa_suite_canal_id, opa_suite_default_template_id, opa_suite_default_department_id FROM companies WHERE id = ?', [req.params.id]);
-                if (rows.length > 0) {
-                    const c = rows[0];
-                    return res.json({
-                        id: c.id,
-                        name: c.name,
-                        cnpj: c.cnpj,
-                        email: c.email_contact,
-                        phone: c.phone,
-                        address: c.address,
-                        ixcDomain: c.ixc_domain,
-                        ixcToken: c.ixc_token,
-                        logoUrl: c.logo_url,
-                        whaticketUrl: c.whaticket_url || 'https://apichat.unityautomacoes.com.br',
-                        whaticketToken: c.whaticket_token || '',
-                        whaticketDefaultUserId: c.whaticket_default_user_id || '',
-                        whaticketDefaultQueueId: c.whaticket_default_queue_id || '',
-                        whaticketSendSignature: Boolean(c.whaticket_send_signature),
-                        whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
-                        whaticketFastSend: c.whaticket_fast_send !== 0,
-                        opaSuiteUrl: c.opa_suite_url || '',
-                        opaSuiteToken: c.opa_suite_token || '',
-                        opaSuiteCanalId: c.opa_suite_canal_id || '',
-                        opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
-                        opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
-                    });
-                }
-            } catch (dbErr) {
-                console.warn('⚠️ Falha ao buscar empresa no MySQL, usando fallback:', dbErr.message);
+        let compFound = null;
+        try {
+            let [rows] = await pool.query('SELECT * FROM companies WHERE id = ?', [req.params.id]);
+            if (!rows || rows.length === 0) {
+                // Tenta buscar a primeira empresa cadastrada no banco caso o ID seja diferente
+                const [allComps] = await pool.query('SELECT * FROM companies ORDER BY id ASC LIMIT 1');
+                if (allComps && allComps.length > 0) rows = allComps;
             }
+            if (rows && rows.length > 0) {
+                const c = rows[0];
+                isDbAvailable = true;
+                compFound = {
+                    id: c.id,
+                    name: c.name,
+                    cnpj: c.cnpj,
+                    email: c.email_contact || c.email,
+                    phone: c.phone || '',
+                    address: c.address || '',
+                    ixcDomain: c.ixc_domain || '',
+                    ixcToken: c.ixc_token || '',
+                    logoUrl: c.logo_url || '',
+                    whaticketUrl: c.whaticket_url || 'https://apichat.unityautomacoes.com.br',
+                    whaticketToken: c.whaticket_token || '',
+                    whaticketDefaultUserId: c.whaticket_default_user_id || '',
+                    whaticketDefaultQueueId: c.whaticket_default_queue_id || '',
+                    whaticketSendSignature: Boolean(c.whaticket_send_signature),
+                    whaticketCloseTicket: Boolean(c.whaticket_close_ticket),
+                    whaticketFastSend: c.whaticket_fast_send !== 0,
+                    opaSuiteUrl: c.opa_suite_url || '',
+                    opaSuiteToken: c.opa_suite_token || '',
+                    opaSuiteCanalId: c.opa_suite_canal_id || '',
+                    opaSuiteDefaultTemplateId: c.opa_suite_default_template_id || '',
+                    opaSuiteDefaultDepartmentId: c.opa_suite_default_department_id || ''
+                };
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar empresa no MySQL, usando fallback:', dbErr.message);
         }
+
+        if (compFound) {
+            return res.json(compFound);
+        }
+
         const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id)) || inMemoryStore.companies[0];
         res.json({
             id: c.id,
@@ -303,24 +319,53 @@ app.put('/api/companies/:id', async (req, res) => {
         opaSuiteUrl, opaSuiteToken, opaSuiteCanalId, opaSuiteDefaultTemplateId, opaSuiteDefaultDepartmentId 
     } = req.body;
     try {
-        if (isDbAvailable) {
-            try {
-                await pool.query(`
-                    UPDATE companies 
-                    SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
-                        whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?,
-                        opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
-                    WHERE id=?
-                `, [
-                    name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
-                    whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
-                    opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, 
-                    req.params.id
-                ]);
-            } catch (dbErr) {
-                console.warn('⚠️ Falha ao atualizar empresa no MySQL, atualizando fallback:', dbErr.message);
+        let updatedInDb = false;
+        try {
+            await pool.query(`
+                UPDATE companies 
+                SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
+                    whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?,
+                    opa_suite_url=?, opa_suite_token=?, opa_suite_canal_id=?, opa_suite_default_template_id=?, opa_suite_default_department_id=?
+                WHERE id=?
+            `, [
+                name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
+                whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
+                opaSuiteUrl || null, opaSuiteToken || null, opaSuiteCanalId || null, opaSuiteDefaultTemplateId || null, opaSuiteDefaultDepartmentId || null, 
+                req.params.id
+            ]);
+            isDbAvailable = true;
+            updatedInDb = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao atualizar empresa no MySQL (tentando colunas ou fallback):', dbErr.message);
+            // Tenta adicionar colunas faltantes e retentar se foi erro de coluna desconhecida
+            if (dbErr.message?.includes('Unknown column')) {
+                try {
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_url VARCHAR(255) DEFAULT \'https://apichat.unityautomacoes.com.br\'');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_token TEXT');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_default_user_id VARCHAR(50)');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_default_queue_id VARCHAR(50)');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_send_signature BOOLEAN DEFAULT FALSE');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_close_ticket BOOLEAN DEFAULT FALSE');
+                    await pool.query('ALTER TABLE companies ADD COLUMN whaticket_fast_send BOOLEAN DEFAULT TRUE');
+                    // Retenta o UPDATE
+                    await pool.query(`
+                        UPDATE companies 
+                        SET name=?, cnpj=?, email_contact=?, phone=?, address=?, ixc_domain=?, ixc_token=?, logo_url=?, 
+                            whaticket_url=?, whaticket_token=?, whaticket_default_user_id=?, whaticket_default_queue_id=?, whaticket_send_signature=?, whaticket_close_ticket=?, whaticket_fast_send=?
+                        WHERE id=?
+                    `, [
+                        name, cnpj, email, phone, address, ixcDomain, ixcToken, logoUrl, 
+                        whaticketUrl || 'https://apichat.unityautomacoes.com.br', whaticketToken || null, whaticketDefaultUserId || null, whaticketDefaultQueueId || null, whaticketSendSignature ? 1 : 0, whaticketCloseTicket ? 1 : 0, whaticketFastSend ? 1 : 0,
+                        req.params.id
+                    ]);
+                    isDbAvailable = true;
+                    updatedInDb = true;
+                } catch (retryErr) {
+                    console.warn('⚠️ Falha na retentativa do UPDATE companies:', retryErr.message);
+                }
             }
         }
+
         const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id));
         if (c) {
             if (name !== undefined) c.name = name;
@@ -341,7 +386,7 @@ app.put('/api/companies/:id', async (req, res) => {
             if (opaSuiteUrl !== undefined) c.opa_suite_url = opaSuiteUrl;
             if (opaSuiteToken !== undefined) c.opa_suite_token = opaSuiteToken;
         }
-        res.json({ success: true });
+        res.json({ success: true, savedToDb: updatedInDb });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -351,25 +396,49 @@ app.put('/api/companies/:id', async (req, res) => {
 app.use('/api/ixc-proxy', async (req, res) => {
     const companyId = req.headers['x-company-id'];
     
-    if (!companyId || companyId === 'undefined' || companyId === 'null') {
-        return res.status(400).json({ error: 'Company ID not provided in headers' });
+    let ixcDomain = null;
+    let ixcToken = null;
+
+    try {
+        if (companyId && companyId !== 'undefined' && companyId !== 'null') {
+            const [rows] = await pool.query('SELECT ixc_domain, ixc_token FROM companies WHERE id = ?', [companyId]);
+            if (rows && rows.length > 0 && rows[0].ixc_domain && rows[0].ixc_token) {
+                ixcDomain = rows[0].ixc_domain;
+                ixcToken = rows[0].ixc_token;
+            }
+        }
+
+        if (!ixcDomain || !ixcToken) {
+            // Tenta qualquer empresa cadastrada que possua credenciais do IXC
+            const [allRows] = await pool.query('SELECT ixc_domain, ixc_token FROM companies WHERE ixc_domain IS NOT NULL AND ixc_domain != "" AND ixc_token IS NOT NULL AND ixc_token != "" ORDER BY id ASC LIMIT 1');
+            if (allRows && allRows.length > 0 && allRows[0].ixc_domain && allRows[0].ixc_token) {
+                ixcDomain = allRows[0].ixc_domain;
+                ixcToken = allRows[0].ixc_token;
+            }
+        }
+    } catch (dbErr) {
+        console.warn('⚠️ Falha ao buscar credenciais IXC no MySQL:', dbErr.message);
+    }
+
+    if (!ixcDomain || !ixcToken) {
+        const memComp = (companyId ? inMemoryStore.companies.find(comp => String(comp.id) === String(companyId)) : null) || inMemoryStore.companies[0];
+        if (memComp && memComp.ixc_domain && memComp.ixc_token) {
+            ixcDomain = memComp.ixc_domain;
+            ixcToken = memComp.ixc_token;
+        }
+    }
+
+    if (!ixcDomain || !ixcToken) {
+        return res.status(400).json({ error: 'Integração IXC não configurada para esta empresa. Acesse Configurações da Empresa e cadastre o Domínio e Token do IXC.' });
     }
 
     try {
-        const [rows] = await pool.query('SELECT ixc_domain, ixc_token FROM companies WHERE id = ?', [companyId]);
-        
-        if (rows.length === 0 || !rows[0].ixc_domain || !rows[0].ixc_token) {
-            return res.status(400).json({ error: 'Integração IXC não configurada para esta empresa.' });
-        }
-
-        const { ixc_domain, ixc_token } = rows[0];
-        
-        let baseUrl = ixc_domain.trim();
+        let baseUrl = ixcDomain.trim();
         if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
 
         const targetUrl = `${baseUrl}${req.url}`;
-        const tokenBase64 = Buffer.from(ixc_token.trim()).toString('base64');
+        const tokenBase64 = Buffer.from(ixcToken.trim()).toString('base64');
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); 
@@ -409,32 +478,42 @@ app.get('/api/users', async (req, res) => {
     const companyId = req.query.companyId;
     if (!companyId) return res.status(400).json({ error: 'Company ID required' });
     try {
-        if (isDbAvailable) {
-            try {
-                const [rows] = await pool.query('SELECT id, name, email, role, active, permissions, ixc_employee_id, opa_user_id, whaticket_user_id FROM users WHERE company_id = ?', [companyId]);
-                const users = rows.map(u => ({
-                    ...u,
-                    permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions,
+        let usersFound = null;
+        try {
+            const [rows] = await pool.query('SELECT * FROM users WHERE company_id = ? OR company_id = 0 OR company_id IS NULL', [companyId]);
+            if (rows && rows.length > 0) {
+                isDbAvailable = true;
+                usersFound = rows.map(u => ({
+                    id: u.id.toString(),
+                    company_id: u.company_id,
+                    name: u.name,
+                    email: u.email,
+                    role: u.role,
+                    permissions: typeof u.permissions === 'string' ? JSON.parse(u.permissions) : (u.permissions || {}),
                     active: !!u.active,
-                    ixcEmployeeId: u.ixc_employee_id,
+                    ixcEmployeeId: u.ixc_employee_id || null,
                     opaUserId: u.opa_user_id || null,
                     whaticketUserId: u.whaticket_user_id || null
                 }));
-                return res.json(users);
-            } catch (dbErr) {
-                console.warn('⚠️ Falha ao buscar usuários no MySQL, usando fallback:', dbErr.message);
             }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar usuários no MySQL, usando fallback:', dbErr.message);
         }
+
+        if (usersFound) {
+            return res.json(usersFound);
+        }
+
         const users = inMemoryStore.users
-            .filter(u => String(u.company_id) === String(companyId))
+            .filter(u => String(u.company_id) === String(companyId) || !u.company_id || u.company_id === 0)
             .map(u => ({
-                id: u.id,
+                id: u.id.toString(),
                 name: u.name,
                 email: u.email,
                 role: u.role,
                 active: !!u.active,
-                permissions: u.permissions,
-                ixcEmployeeId: u.ixc_employee_id,
+                permissions: u.permissions || {},
+                ixcEmployeeId: u.ixc_employee_id || null,
                 opaUserId: u.opa_user_id || null,
                 whaticketUserId: u.whaticket_user_id || null
             }));
@@ -446,18 +525,32 @@ app.post('/api/users', async (req, res) => {
     const { companyId, name, email, password, role, permissions, active, ixcEmployeeId, opaUserId, whaticketUserId } = req.body;
     try {
         const whaticketId = whaticketUserId || null;
-        if (isDbAvailable) {
-            try {
-                const [result] = await pool.query(
-                    'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id, whaticket_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null, whaticketId]
-                );
-                return res.json({ success: true, id: result.insertId });
-            } catch (dbErr) {
-                console.warn('⚠️ Falha ao criar usuário no MySQL, gravando no fallback:', dbErr.message);
+        let insertedId = null;
+        try {
+            const [result] = await pool.query(
+                'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id, whaticket_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null, whaticketId]
+            );
+            insertedId = result.insertId;
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao criar usuário no MySQL (tentando colunas ou fallback):', dbErr.message);
+            if (dbErr.message?.includes('Unknown column')) {
+                try {
+                    await pool.query('ALTER TABLE users ADD COLUMN whaticket_user_id VARCHAR(50) DEFAULT NULL');
+                    const [retryResult] = await pool.query(
+                        'INSERT INTO users (company_id, name, email, password, role, permissions, active, ixc_employee_id, opa_user_id, whaticket_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [companyId, name, email, password, role, JSON.stringify(permissions), active, ixcEmployeeId || null, opaUserId || null, whaticketId]
+                    );
+                    insertedId = retryResult.insertId;
+                    isDbAvailable = true;
+                } catch (rErr) {
+                    console.warn('⚠️ Retentativa de criação de usuário falhou:', rErr.message);
+                }
             }
         }
-        const newId = inMemoryStore.users.length + 1;
+
+        const newId = insertedId || inMemoryStore.users.length + 1;
         inMemoryStore.users.push({
             id: newId,
             company_id: parseInt(companyId),
@@ -479,26 +572,45 @@ app.put('/api/users/:id', async (req, res) => {
     const { name, email, password, permissions, active, role, ixcEmployeeId, opaUserId, whaticketUserId } = req.body;
     try {
         const whaticketId = whaticketUserId !== undefined ? (whaticketUserId || null) : undefined;
-        if (isDbAvailable) {
-            try {
-                let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
-                let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
-                if (whaticketId !== undefined) {
-                    query += ', whaticket_user_id=?';
-                    params.push(whaticketId);
-                }
-                if (password && password.trim() !== '') {
-                    query += ', password=?';
-                    params.push(password);
-                }
-                query += ' WHERE id=?';
-                params.push(req.params.id);
-                await pool.query(query, params);
-                return res.json({ success: true });
-            } catch (dbErr) {
-                console.warn('⚠️ Falha ao atualizar usuário no MySQL, gravando no fallback:', dbErr.message);
+        try {
+            let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
+            let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
+            if (whaticketId !== undefined) {
+                query += ', whaticket_user_id=?';
+                params.push(whaticketId);
+            }
+            if (password && password.trim() !== '') {
+                query += ', password=?';
+                params.push(password);
+            }
+            query += ' WHERE id=?';
+            params.push(req.params.id);
+            await pool.query(query, params);
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao atualizar usuário no MySQL, gravando no fallback:', dbErr.message);
+            if (dbErr.message?.includes('Unknown column')) {
+                try {
+                    await pool.query('ALTER TABLE users ADD COLUMN whaticket_user_id VARCHAR(50) DEFAULT NULL');
+                    // Retenta
+                    let query = 'UPDATE users SET name=?, email=?, permissions=?, active=?, role=?, ixc_employee_id=?, opa_user_id=?';
+                    let params = [name, email, JSON.stringify(permissions), active, role, ixcEmployeeId || null, opaUserId || null];
+                    if (whaticketId !== undefined) {
+                        query += ', whaticket_user_id=?';
+                        params.push(whaticketId);
+                    }
+                    if (password && password.trim() !== '') {
+                        query += ', password=?';
+                        params.push(password);
+                    }
+                    query += ' WHERE id=?';
+                    params.push(req.params.id);
+                    await pool.query(query, params);
+                    isDbAvailable = true;
+                } catch (rErr) {}
             }
         }
+
         const user = inMemoryStore.users.find(u => String(u.id) === String(req.params.id));
         if (user) {
             if (name !== undefined) user.name = name;
@@ -517,7 +629,14 @@ app.put('/api/users/:id', async (req, res) => {
 
 app.delete('/api/users/:id', async (req, res) => {
     try {
-        await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+        try {
+            await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Erro ao deletar usuário do MySQL:', dbErr.message);
+        }
+        const idx = inMemoryStore.users.findIndex(u => String(u.id) === String(req.params.id));
+        if (idx !== -1) inMemoryStore.users.splice(idx, 1);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -526,29 +645,61 @@ app.delete('/api/users/:id', async (req, res) => {
 
 app.get('/api/score-rules', async (req, res) => {
     try {
-        let query = 'SELECT * FROM score_rules';
-        let params = [];
-        if (req.query.companyId) { query += ' WHERE company_id = ?'; params.push(req.query.companyId); }
-        const [rows] = await pool.query(query, params);
-        const rulesMap = {};
-        rows.forEach(row => { 
-            rulesMap[row.subject_id] = { 
-                subjectId: row.subject_id, 
-                points: Number(row.points), 
-                type: row.type,
-                allowSplit: !!row.allow_split 
-            }; 
-        });
-        res.json(rulesMap);
-    } catch (e) { res.status(500).json({error: e.message}); }
+        let rulesFound = null;
+        try {
+            let query = 'SELECT * FROM score_rules';
+            let params = [];
+            if (req.query.companyId && req.query.companyId !== 'undefined' && req.query.companyId !== 'null') {
+                query += ' WHERE (company_id = ? OR company_id = 0 OR company_id IS NULL)';
+                params.push(req.query.companyId);
+            }
+            const [rows] = await pool.query(query, params);
+            if (rows && rows.length > 0) {
+                isDbAvailable = true;
+                const rulesMap = {};
+                rows.forEach(row => { 
+                    rulesMap[row.subject_id] = { 
+                        subjectId: row.subject_id, 
+                        points: Number(row.points), 
+                        type: row.type,
+                        allowSplit: !!row.allow_split 
+                    }; 
+                });
+                rulesFound = rulesMap;
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar score_rules no MySQL:', dbErr.message);
+        }
+
+        if (rulesFound) {
+            return res.json(rulesFound);
+        }
+        res.json(inMemoryStore.scoreRules || {});
+    } catch (e) { 
+        res.json(inMemoryStore.scoreRules || {});
+    }
 });
 
 app.post('/api/score-rules', async (req, res) => {
     try {
-        await pool.query(`INSERT INTO score_rules (company_id, subject_id, points, type, allow_split) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE points = VALUES(points), type = VALUES(type), allow_split = VALUES(allow_split)`, 
-        [req.body.companyId || 0, req.body.subjectId, req.body.points, req.body.type, req.body.allowSplit]);
+        const { companyId, subjectId, points, type, allowSplit } = req.body;
+        try {
+            await pool.query(`INSERT INTO score_rules (company_id, subject_id, points, type, allow_split) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE points = VALUES(points), type = VALUES(type), allow_split = VALUES(allow_split)`, 
+            [companyId || 0, subjectId, points, type, allowSplit]);
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao salvar score_rule no MySQL, salvando em memória:', dbErr.message);
+        }
+
+        if (!inMemoryStore.scoreRules) inMemoryStore.scoreRules = {};
+        inMemoryStore.scoreRules[subjectId] = {
+            subjectId,
+            points: Number(points),
+            type: type || 'both',
+            allowSplit: Boolean(allowSplit)
+        };
         res.json({ success: true });
-    } catch (e) { res.status(500).json({error: e.message}); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- ROTAS DE DIVISÃO DE PONTOS (SPLITS) ---
@@ -556,42 +707,68 @@ app.post('/api/score-rules', async (req, res) => {
 // Obter Splits (Retorna mapa { os_id: [tech_id1, tech_id2] })
 app.get('/api/os-splits', async (req, res) => {
     const companyId = req.query.companyId;
-    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT os_id, technician_id FROM os_splits WHERE company_id = ?', [companyId]);
-        const splits = {};
-        rows.forEach(row => {
-            if (!splits[row.os_id]) splits[row.os_id] = [];
-            splits[row.os_id].push(row.technician_id);
-        });
-        res.json(splits);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+        let splitsFound = null;
+        try {
+            let query = 'SELECT os_id, technician_id FROM os_splits';
+            let params = [];
+            if (companyId && companyId !== 'undefined' && companyId !== 'null') {
+                query += ' WHERE (company_id = ? OR company_id = 0 OR company_id IS NULL)';
+                params.push(companyId);
+            }
+            const [rows] = await pool.query(query, params);
+            if (rows) {
+                isDbAvailable = true;
+                const splits = {};
+                rows.forEach(row => {
+                    if (!splits[row.os_id]) splits[row.os_id] = [];
+                    splits[row.os_id].push(row.technician_id);
+                });
+                splitsFound = splits;
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar os_splits no MySQL:', dbErr.message);
+        }
+
+        if (splitsFound) {
+            return res.json(splitsFound);
+        }
+        res.json(inMemoryStore.osSplits || {});
+    } catch (e) { 
+        res.json(inMemoryStore.osSplits || {});
+    }
 });
 
 // Salvar Split (Sobrescreve participantes de uma OS)
 app.post('/api/os-splits', async (req, res) => {
     const { companyId, osId, technicianIds } = req.body;
-    if (!companyId) return res.status(400).json({ error: 'Company ID required' });
-    const connection = await pool.getConnection();
     try {
-        await connection.beginTransaction();
-        
-        // Remove anteriores
-        await connection.query('DELETE FROM os_splits WHERE company_id = ? AND os_id = ?', [companyId, osId]);
-        
-        // Insere novos (se houver)
-        if (technicianIds && technicianIds.length > 0) {
-            const values = technicianIds.map(tid => [companyId, osId, tid]);
-            await connection.query('INSERT INTO os_splits (company_id, os_id, technician_id) VALUES ?', [values]);
+        try {
+            const connection = await pool.getConnection();
+            try {
+                await connection.beginTransaction();
+                await connection.query('DELETE FROM os_splits WHERE (company_id = ? OR company_id = 0) AND os_id = ?', [companyId || 0, osId]);
+                if (technicianIds && technicianIds.length > 0) {
+                    const values = technicianIds.map(tid => [companyId || 0, osId, tid]);
+                    await connection.query('INSERT INTO os_splits (company_id, os_id, technician_id) VALUES ?', [values]);
+                }
+                await connection.commit();
+                isDbAvailable = true;
+            } catch (txErr) {
+                await connection.rollback();
+                throw txErr;
+            } finally {
+                connection.release();
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao salvar os_splits no MySQL, salvando em memória:', dbErr.message);
         }
-        
-        await connection.commit();
+
+        if (!inMemoryStore.osSplits) inMemoryStore.osSplits = {};
+        inMemoryStore.osSplits[osId] = technicianIds || [];
         res.json({ success: true });
     } catch (e) {
-        await connection.rollback();
         res.status(500).json({ error: e.message });
-    } finally {
-        connection.release();
     }
 });
 
@@ -600,22 +777,38 @@ app.post('/api/os-splits', async (req, res) => {
 // Obter Penalizações
 app.get('/api/os-penalties', async (req, res) => {
     const companyId = req.query.companyId;
-    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT * FROM os_penalties WHERE company_id = ?', [companyId]);
-        const penalties = rows.map(row => ({
-            id: row.id,
-            osId: row.os_id,
-            technicianId: row.technician_id,
-            amount: Number(row.amount),
-            reason: row.reason,
-            createdAt: row.created_at
-        }));
-        res.json(penalties);
+        let penaltiesFound = null;
+        try {
+            let query = 'SELECT * FROM os_penalties';
+            let params = [];
+            if (companyId && companyId !== 'undefined' && companyId !== 'null') {
+                query += ' WHERE (company_id = ? OR company_id = 0 OR company_id IS NULL)';
+                params.push(companyId);
+            }
+            query += ' ORDER BY created_at DESC';
+            const [rows] = await pool.query(query, params);
+            if (rows) {
+                isDbAvailable = true;
+                penaltiesFound = rows.map(row => ({
+                    id: row.id,
+                    osId: row.os_id,
+                    technicianId: row.technician_id,
+                    amount: Number(row.amount),
+                    reason: row.reason,
+                    createdAt: row.created_at
+                }));
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar os_penalties no MySQL:', dbErr.message);
+        }
+
+        if (penaltiesFound) {
+            return res.json(penaltiesFound);
+        }
+        res.json(inMemoryStore.osPenalties || []);
     } catch (e) { 
-        console.error('Erro na rota GET /api/os-penalties:', e);
-        // Retorna array vazio em caso de erro para não quebrar o frontend
-        res.status(200).json([]); 
+        res.json(inMemoryStore.osPenalties || []);
     }
 });
 
@@ -623,53 +816,92 @@ app.get('/api/os-penalties', async (req, res) => {
 app.post('/api/os-penalties', async (req, res) => {
     const { companyId, osId, technicianId, amount, reason } = req.body;
     try {
-        console.log(`Tentando salvar penalização: OS ${osId}, Tech ${technicianId}, Amount ${amount}`);
-        await pool.query(
-            'INSERT INTO os_penalties (company_id, os_id, technician_id, amount, reason) VALUES (?, ?, ?, ?, ?)',
-            [companyId, osId, technicianId, amount, reason]
-        );
-        res.json({ success: true });
+        let insertId = Date.now();
+        try {
+            const [result] = await pool.query(
+                'INSERT INTO os_penalties (company_id, os_id, technician_id, amount, reason) VALUES (?, ?, ?, ?, ?)',
+                [companyId || 0, osId, technicianId, amount, reason]
+            );
+            if (result?.insertId) insertId = result.insertId;
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao salvar os_penalties no MySQL, salvando em memória:', dbErr.message);
+        }
+
+        if (!inMemoryStore.osPenalties) inMemoryStore.osPenalties = [];
+        inMemoryStore.osPenalties.unshift({
+            id: insertId,
+            company_id: companyId || 0,
+            os_id: osId,
+            technician_id: technicianId,
+            amount: Number(amount),
+            reason,
+            created_at: new Date().toISOString()
+        });
+        res.json({ success: true, id: insertId });
     } catch (e) { 
-        console.error('Erro ao salvar penalização (POST /api/os-penalties):', e);
-        res.status(500).json({ error: e.message, details: 'Erro ao inserir no banco de dados' }); 
+        res.status(500).json({ error: e.message }); 
     }
 });
 
 // Remover Penalização
 app.delete('/api/os-penalties/:id', async (req, res) => {
     try {
-        console.log(`Tentando deletar penalização ID: ${req.params.id}`);
-        await pool.query('DELETE FROM os_penalties WHERE id = ?', [req.params.id]);
+        try {
+            await pool.query('DELETE FROM os_penalties WHERE id = ?', [req.params.id]);
+            isDbAvailable = true;
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao deletar penalização no MySQL:', dbErr.message);
+        }
+        if (inMemoryStore.osPenalties) {
+            inMemoryStore.osPenalties = inMemoryStore.osPenalties.filter(p => String(p.id) !== String(req.params.id));
+        }
         res.json({ success: true });
     } catch (e) { 
-        console.error('Erro ao deletar penalização (DELETE /api/os-penalties):', e);
         res.status(500).json({ error: e.message }); 
     }
 });
 
 // --- ROTAS DE ATRIBUIÇÃO DE OS PARA FUNCIONÁRIOS ---
 
-// Obter Atribuições (Retorna mapa { [os_id]: { osId, userId, technicianId, assignedName, assignedBy, createdAt } })
+// Obter Atribuições
 app.get('/api/os-assignments', async (req, res) => {
     const companyId = req.query.companyId || req.headers['x-company-id'];
-    if (!companyId || companyId === 'undefined' || companyId === 'null') return res.status(400).json({ error: 'Company ID required' });
     try {
-        const [rows] = await pool.query('SELECT os_id, user_id, technician_id, assigned_name, assigned_by, created_at FROM os_assignments WHERE company_id = ?', [companyId]);
-        const map = {};
-        rows.forEach(r => {
-            map[r.os_id] = {
-                osId: r.os_id,
-                userId: r.user_id,
-                technicianId: r.technician_id,
-                assignedName: r.assigned_name,
-                assignedBy: r.assigned_by,
-                createdAt: r.created_at
-            };
-        });
-        res.json(map);
+        let mapFound = null;
+        try {
+            let query = 'SELECT os_id, user_id, technician_id, assigned_name, assigned_by, created_at FROM os_assignments';
+            let params = [];
+            if (companyId && companyId !== 'undefined' && companyId !== 'null') {
+                query += ' WHERE (company_id = ? OR company_id = 0 OR company_id IS NULL)';
+                params.push(companyId);
+            }
+            const [rows] = await pool.query(query, params);
+            if (rows) {
+                isDbAvailable = true;
+                const map = {};
+                rows.forEach(r => {
+                    map[r.os_id] = {
+                        osId: r.os_id,
+                        userId: r.user_id,
+                        technicianId: r.technician_id,
+                        assignedName: r.assigned_name,
+                        assignedBy: r.assigned_by,
+                        createdAt: r.created_at
+                    };
+                });
+                mapFound = map;
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao buscar atribuições no MySQL:', dbErr.message);
+        }
+
+        if (mapFound) {
+            return res.json(mapFound);
+        }
+        res.json(inMemoryStore.osAssignments || {});
     } catch (e) {
-        console.error('Erro ao buscar atribuições:', e);
-        res.status(200).json({});
+        res.json(inMemoryStore.osAssignments || {});
     }
 });
 
@@ -1247,7 +1479,11 @@ async function getWhaticketConfig(companyId, directUrl, directToken) {
 
     if (isDbAvailable) {
         try {
-            const [rows] = await pool.query('SELECT whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send FROM companies WHERE id = ?', [companyId]);
+            let [rows] = await pool.query('SELECT whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send FROM companies WHERE id = ?', [companyId]);
+            if (!rows || rows.length === 0 || !rows[0].whaticket_token) {
+                const [anyRows] = await pool.query('SELECT whaticket_url, whaticket_token, whaticket_default_user_id, whaticket_default_queue_id, whaticket_send_signature, whaticket_close_ticket, whaticket_fast_send FROM companies WHERE whaticket_token IS NOT NULL AND whaticket_token != "" ORDER BY id ASC LIMIT 1');
+                if (anyRows && anyRows.length > 0) rows = anyRows;
+            }
             if (rows.length > 0 && rows[0].whaticket_token) {
                 let url = (rows[0].whaticket_url || 'https://apichat.unityautomacoes.com.br').trim();
                 if (url.endsWith('/')) url = url.slice(0, -1);

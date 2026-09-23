@@ -71,17 +71,27 @@ export const CompanySettings: React.FC = () => {
     setIsFetching(true);
     const savedLocal = localStorage.getItem('unity_company_data');
     let companyId = null;
+    let localParsed: any = null;
     
     if (savedLocal) {
       try {
-        const parsed = JSON.parse(savedLocal);
-        companyId = parsed.id;
+        localParsed = JSON.parse(savedLocal);
+        companyId = localParsed?.id;
       } catch (e) {}
+    }
+
+    if (!companyId) {
+      const sessionStr = localStorage.getItem('unity_user_session');
+      if (sessionStr) {
+        try {
+          const session = JSON.parse(sessionStr);
+          companyId = session?.companyId || '1';
+        } catch (e) {}
+      }
     }
     
     if (!companyId) {
-      setIsFetching(false);
-      return;
+      companyId = '1';
     }
 
     try {
@@ -91,14 +101,16 @@ export const CompanySettings: React.FC = () => {
         const fullData: Company = { 
           ...data, 
           useCorsProxy: true,
-          id: data.id.toString(),
-          whaticketUrl: data.whaticketUrl || 'https://apichat.unityautomacoes.com.br',
-          whaticketToken: data.whaticketToken || '',
-          whaticketDefaultUserId: data.whaticketDefaultUserId || '',
-          whaticketDefaultQueueId: data.whaticketDefaultQueueId || '',
-          whaticketSendSignature: Boolean(data.whaticketSendSignature),
-          whaticketCloseTicket: Boolean(data.whaticketCloseTicket),
-          whaticketFastSend: data.whaticketFastSend !== false
+          id: data.id ? data.id.toString() : String(companyId),
+          ixcDomain: data.ixcDomain || localParsed?.ixcDomain || '',
+          ixcToken: data.ixcToken || localParsed?.ixcToken || '',
+          whaticketUrl: data.whaticketUrl || localParsed?.whaticketUrl || 'https://apichat.unityautomacoes.com.br',
+          whaticketToken: data.whaticketToken || localParsed?.whaticketToken || '',
+          whaticketDefaultUserId: data.whaticketDefaultUserId || localParsed?.whaticketDefaultUserId || '',
+          whaticketDefaultQueueId: data.whaticketDefaultQueueId || localParsed?.whaticketDefaultQueueId || '',
+          whaticketSendSignature: data.whaticketSendSignature !== undefined ? Boolean(data.whaticketSendSignature) : Boolean(localParsed?.whaticketSendSignature),
+          whaticketCloseTicket: data.whaticketCloseTicket !== undefined ? Boolean(data.whaticketCloseTicket) : Boolean(localParsed?.whaticketCloseTicket),
+          whaticketFastSend: data.whaticketFastSend !== undefined ? (data.whaticketFastSend !== false) : (localParsed?.whaticketFastSend !== false)
         };
         setCompany(fullData);
         localStorage.setItem('unity_company_data', JSON.stringify(fullData));

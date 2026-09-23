@@ -93,22 +93,28 @@ export const ScoreManagement: React.FC = () => {
   };
 
   const getApiConfig = useCallback(() => {
+    let companyIdStr = '1';
     const savedCompany = localStorage.getItem('unity_company_data');
-    if (!savedCompany) return null;
-    try {
+    if (savedCompany) {
+      try {
         const company: Company = JSON.parse(savedCompany);
-        if (!company || !company.id) return null;
-        
-        const companyIdStr = String(company.id);
-        
-        return {
-          domain: '/api/ixc-proxy', 
-          headers: { 'Content-Type': 'application/json', 'x-company-id': companyIdStr },
-          id: companyIdStr
-        };
-    } catch (e) {
-        return null;
+        if (company && company.id) companyIdStr = String(company.id);
+      } catch (e) {}
+    } else {
+      const sessionStr = localStorage.getItem('unity_user_session');
+      if (sessionStr) {
+        try {
+          const session = JSON.parse(sessionStr);
+          if (session.companyId) companyIdStr = String(session.companyId);
+        } catch (e) {}
+      }
     }
+    
+    return {
+      domain: '/api/ixc-proxy', 
+      headers: { 'Content-Type': 'application/json', 'x-company-id': companyIdStr },
+      id: companyIdStr
+    };
   }, []);
 
   const buildUrl = (config: any, path: string) => `${config.domain}${path}`;

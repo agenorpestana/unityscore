@@ -309,18 +309,30 @@ export const Reports: React.FC = () => {
   };
 
   const getApiConfig = useCallback(() => {
+    let companyIdStr = '1';
     const savedCompany = localStorage.getItem('unity_company_data');
-    if (!savedCompany) return null;
-    const company: Company = JSON.parse(savedCompany);
-    if (!company.id) return null;
+    if (savedCompany) {
+      try {
+        const company: Company = JSON.parse(savedCompany);
+        if (company && company.id) companyIdStr = String(company.id);
+      } catch (e) {}
+    } else {
+      const sessionStr = localStorage.getItem('unity_user_session');
+      if (sessionStr) {
+        try {
+          const session = JSON.parse(sessionStr);
+          if (session.companyId) companyIdStr = String(session.companyId);
+        } catch (e) {}
+      }
+    }
 
     return {
       domain: '/api/ixc-proxy', 
       headers: { 
           'Content-Type': 'application/json',
-          'x-company-id': company.id 
+          'x-company-id': companyIdStr 
       },
-      id: company.id
+      id: companyIdStr
     };
   }, []);
 
@@ -789,7 +801,6 @@ export const Reports: React.FC = () => {
     fetchPenaltiesFromBackend(config.id);
     fetchSubjectsAndResponses(config);
     fetchOsAssignments(config.id);
-    fetchOpaTemplatesList(config.id);
 
     try {
       // 1. Tentar buscar Funções (Cargos de RH)
