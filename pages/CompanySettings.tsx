@@ -153,18 +153,32 @@ export const CompanySettings: React.FC = () => {
         };
         setCompany(fullData);
 
-        // Carrega modelos de OS customizados se existirem
-        if (data.osTemplates || localParsed?.osTemplates) {
-          const loadedTemplates = data.osTemplates || localParsed?.osTemplates;
+        // Carrega modelos de OS customizados com prioridade total para o servidor
+        if (data.osTemplates) {
           setOsTemplates(prev => ({
             ...prev,
-            ...loadedTemplates
+            ...data.osTemplates
           }));
+        } else {
+          // Busca diretamente no endpoint de templates
+          try {
+            const tRes = await fetch(`/api/companies/${companyId}/templates`);
+            if (tRes.ok) {
+              const tData = await tRes.json();
+              if (tData?.templates) {
+                setOsTemplates(prev => ({
+                  ...prev,
+                  ...tData.templates
+                }));
+                fullData.osTemplates = tData.templates;
+              }
+            }
+          } catch (e) {}
         }
 
         localStorage.setItem('unity_company_data', JSON.stringify({
           ...fullData,
-          osTemplates: data.osTemplates || localParsed?.osTemplates || osTemplates
+          osTemplates: data.osTemplates || fullData.osTemplates || osTemplates
         }));
 
         if (fullData.whaticketToken) {
@@ -374,6 +388,13 @@ export const CompanySettings: React.FC = () => {
       });
 
       if (!res.ok) throw new Error('Falha ao salvar');
+
+      // Garante persistência explícita dos modelos para todos os computadores
+      await fetch(`/api/companies/${company.id}/templates`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templates: osTemplates })
+      }).catch(err => console.warn('Aviso ao persistir templates:', err));
 
       localStorage.setItem('unity_company_data', JSON.stringify(companyToSave));
       setMessage({ type: 'success', text: 'Dados da empresa, modelos de O.S. e integração Whaticket salvos com sucesso!' });

@@ -52,6 +52,13 @@ const PORT = detectedPort;
 
 let isDbAvailable = false;
 
+// Persistência em disco para garantir que configurações e modelos de O.S. sejam compartilhados entre todos os computadores
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
+}
+const COMPANIES_FILE = path.join(DATA_DIR, 'companies_store.json');
+
 // Armazenamento em memória caso o MySQL externo esteja inacessível (ex: firewall ou VPS offline)
 const inMemoryStore = {
     plans: [
@@ -120,6 +127,32 @@ const inMemoryStore = {
     osAssignments: {},
     osSplits: {}
 };
+
+function saveCompaniesToDisk() {
+    try {
+        fs.writeFileSync(COMPANIES_FILE, JSON.stringify(inMemoryStore.companies, null, 2), 'utf-8');
+    } catch (err) {
+        console.warn('⚠️ Falha ao salvar empresas no disco:', err.message);
+    }
+}
+
+function loadCompaniesFromDisk() {
+    try {
+        if (fs.existsSync(COMPANIES_FILE)) {
+            const raw = fs.readFileSync(COMPANIES_FILE, 'utf-8');
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                inMemoryStore.companies = parsed;
+                console.log(`📦 Carregadas ${parsed.length} empresa(s) do disco com persistência.`);
+            }
+        }
+    } catch (err) {
+        console.warn('⚠️ Falha ao carregar empresas do disco:', err.message);
+    }
+}
+
+// Inicializa dados do disco
+loadCompaniesFromDisk();
 
 const rawHost = cleanEnv(process.env.DB_HOST) || '127.0.0.1';
 const dbHost = (rawHost === 'localhost') ? '127.0.0.1' : rawHost;
@@ -408,7 +441,7 @@ app.put('/api/companies/:id', async (req, res) => {
             }
         }
 
-        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id));
+        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id)) || inMemoryStore.companies[0];
         if (c) {
             if (name !== undefined) c.name = name;
             if (cnpj !== undefined) c.cnpj = cnpj;
@@ -431,10 +464,46 @@ app.put('/api/companies/:id', async (req, res) => {
             }
             if (opaSuiteUrl !== undefined) c.opa_suite_url = opaSuiteUrl;
             if (opaSuiteToken !== undefined) c.opa_suite_token = opaSuiteToken;
+            // Persiste imediatamente em disco para que todos os computadores recebam
+            saveCompaniesToDisk();
         }
-        res.json({ success: true, savedToDb: updatedInDb });
+        res.json({ success: true, savedToDb: updatedInDb, osTemplates: c?.osTemplates || null });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Obter Modelos de Mensagens de O.S. (compartilhados entre todos os usuários e PCs)
+app.get('/api/companies/:id/templates', (req, res) => {
+    try {
+        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id)) || inMemoryStore.companies[0];
+        const templates = c?.osTemplates || (c?.os_templates ? (typeof c.os_templates === 'string' ? JSON.parse(c.os_templates) : c.os_templates) : null);
+        res.json({ templates: templates || null });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Atualizar Modelos de Mensagens de O.S.
+app.put('/api/companies/:id/templates', async (req, res) => {
+    try {
+        const { templates } = req.body;
+        const c = inMemoryStore.companies.find(comp => String(comp.id) === String(req.params.id)) || inMemoryStore.companies[0];
+        if (c && templates) {
+            c.osTemplates = templates;
+            c.os_templates = JSON.stringify(templates);
+            saveCompaniesToDisk();
+        }
+        try {
+            if (templates) {
+                await pool.query('UPDATE companies SET os_templates = ? WHERE id = ?', [JSON.stringify(templates), req.params.id]);
+            }
+        } catch (dbErr) {
+            console.warn('⚠️ Falha ao atualizar templates no MySQL:', dbErr.message);
+        }
+        res.json({ success: true, templates });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 

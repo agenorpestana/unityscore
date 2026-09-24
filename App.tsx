@@ -42,10 +42,34 @@ const App: React.FC = () => {
             try {
                 const user = JSON.parse(savedSession);
                 setAuth({ isAuthenticated: true, user });
+                if (user?.companyId) {
+                  syncCompanyData(user.companyId);
+                } else {
+                  syncCompanyData('1');
+                }
             } catch (e) {
                 localStorage.removeItem('unity_user_session');
             }
+        } else {
+            syncCompanyData('1');
         }
+    }
+  }, []);
+
+  // Sincroniza dados da empresa (incluindo modelos de O.S.) com o servidor para que todos os computadores tenham as mensagens atualizadas
+  const syncCompanyData = useCallback(async (companyId?: string | number) => {
+    const cid = companyId || '1';
+    try {
+      const res = await fetch(`/api/companies/${cid}`);
+      if (res.ok) {
+        const data = await res.json();
+        const existing = localStorage.getItem('unity_company_data');
+        const existingData = existing ? JSON.parse(existing) : {};
+        const merged = { ...existingData, ...data, id: String(data.id || cid) };
+        localStorage.setItem('unity_company_data', JSON.stringify(merged));
+      }
+    } catch (e) {
+      console.warn('Erro ao sincronizar dados da empresa:', e);
     }
   }, []);
 
@@ -87,6 +111,9 @@ const App: React.FC = () => {
         const existingData = existing ? JSON.parse(existing) : {};
         const newData = { ...existingData, id: user.companyId };
         localStorage.setItem('unity_company_data', JSON.stringify(newData));
+        syncCompanyData(user.companyId);
+    } else {
+        syncCompanyData('1');
     }
   };
 

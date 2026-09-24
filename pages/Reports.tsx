@@ -252,6 +252,40 @@ export const Reports: React.FC = () => {
   const [whaticketToast, setWhaticketToast] = useState<{ success: boolean; text: string } | null>(null);
   const [showCompleted, setShowCompleted] = useState<boolean>(false);
   const [completingOsId, setCompletingOsId] = useState<string | null>(null);
+  const [customOsTemplates, setCustomOsTemplates] = useState<Record<string, string> | null>(null);
+
+  // Carrega os modelos customizados compartilhados no servidor
+  const loadTemplatesFromServer = useCallback(async () => {
+    try {
+      const savedCompany = localStorage.getItem('unity_company_data');
+      let cid = '1';
+      if (savedCompany) {
+        try { cid = JSON.parse(savedCompany)?.id || '1'; } catch (e) {}
+      }
+      const res = await fetch(`/api/companies/${cid}/templates`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.templates) {
+          setCustomOsTemplates(data.templates);
+          if (savedCompany) {
+            try {
+              const comp = JSON.parse(savedCompany);
+              comp.osTemplates = data.templates;
+              localStorage.setItem('unity_company_data', JSON.stringify(comp));
+            } catch (e) {}
+          }
+          return data.templates;
+        }
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar modelos de OS do servidor:', e);
+    }
+    return null;
+  }, []);
+
+  useEffect(() => {
+    loadTemplatesFromServer();
+  }, [loadTemplatesFromServer]);
 
   // Finalização de O.S. no IXC via API
   const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
@@ -483,23 +517,25 @@ export const Reports: React.FC = () => {
     return `55${clean}`;
   };
 
-  const getWhaticketPresetTemplate = (preset: string, row?: SubjectReportRow | null, clientName?: string) => {
+  const getWhaticketPresetTemplate = (preset: string, row?: SubjectReportRow | null, clientName?: string, overrideTemplates?: Record<string, string> | null) => {
     const target = row || whaticketTargetOs;
     const client = clientName || whaticketClientName || 'Cliente';
     const osId = target?.osId || '0000';
     const servico = target?.subjectTitle || 'Suporte Técnico';
     const tecnico = target?.technicianName || 'Técnico Especializado';
 
-    // Modelos customizados da empresa configurados pelo administrador
-    let customTemplates: Record<string, string> | null = null;
-    const savedCompany = localStorage.getItem('unity_company_data');
-    if (savedCompany) {
-      try {
-        const comp = JSON.parse(savedCompany);
-        if (comp.osTemplates) {
-          customTemplates = comp.osTemplates;
-        }
-      } catch (e) {}
+    // Modelos customizados da empresa configurados pelo administrador (prioridade: override > estado sincronizado > localStorage)
+    let customTemplates: Record<string, string> | null = overrideTemplates || customOsTemplates;
+    if (!customTemplates) {
+      const savedCompany = localStorage.getItem('unity_company_data');
+      if (savedCompany) {
+        try {
+          const comp = JSON.parse(savedCompany);
+          if (comp.osTemplates) {
+            customTemplates = comp.osTemplates;
+          }
+        } catch (e) {}
+      }
     }
 
     const replaceTags = (template: string) => {
@@ -1080,8 +1116,11 @@ export const Reports: React.FC = () => {
           setWhaticketUserId(defaultUser);
       }
 
+      // Busca os modelos mais atualizados do servidor para exibir modificações feitas em outros computadores
+      const latestTemplates = await loadTemplatesFromServer();
+
       // Mensagem inicial padrão
-      const initialMsg = getWhaticketPresetTemplate('abertura', row, clientName);
+      const initialMsg = getWhaticketPresetTemplate('abertura', row, clientName, latestTemplates);
       setWhaticketPreset('abertura');
       setWhaticketMessageText(initialMsg);
   };
@@ -1090,7 +1129,7 @@ export const Reports: React.FC = () => {
       setWhaticketPreset(preset);
       // Mantém sempre o modo de envio "Com Ticket"
       setWhaticketSendMode('ticket');
-      const msg = getWhaticketPresetTemplate(preset, whaticketTargetOs, whaticketClientName);
+      const msg = getWhaticketPresetTemplate(preset, whaticketTargetOs, whaticketClientName, customOsTemplates);
       setWhaticketMessageText(msg);
   };
 
